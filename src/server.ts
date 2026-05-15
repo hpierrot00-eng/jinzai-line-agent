@@ -104,9 +104,19 @@ app.post('/monthly-rules', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+function errorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
-  if (!res.headersSent) res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  if (!res.headersSent) res.status(500).json({ ok: false, error: errorMessage(err) });
 });
 
 app.listen(config.PORT, () => {
