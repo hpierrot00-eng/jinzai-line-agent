@@ -22,8 +22,70 @@ export function extractLineEvents(body) {
         messageType: event.message.type,
     }));
 }
+async function responseText(res) {
+    const text = await res.text();
+    return text ? `${res.status} ${text}` : String(res.status);
+}
+function lineHarnessApiBase(rawUrl) {
+    const url = new URL(rawUrl);
+    if (/line-harness-admin.*\.pages\.dev$/.test(url.hostname)) {
+        throw new Error('LINE_HARNESS_SEND_URL must be the LINE Harness API URL, not the admin UI URL');
+    }
+    if (url.pathname === '/' || url.pathname === '' || url.pathname === '/api')
+        return url.origin;
+    return null;
+}
+function harnessHeaders() {
+    return {
+        'content-type': 'application/json',
+        ...(config.LINE_HARNESS_API_KEY ? { authorization: `Bearer ${config.LINE_HARNESS_API_KEY}` } : {}),
+    };
+}
+async function harnessJson(path) {
+    const res = await fetch(path, { headers: harnessHeaders() });
+    if (!res.ok)
+        throw new Error(`LINE Harness API failed: ${await responseText(res)}`);
+    return res.json();
+}
+async function resolveHarnessFriend(baseUrl, lineUserId) {
+    const direct = await fetch(`${baseUrl}/api/friends/${encodeURIComponent(lineUserId)}`, { headers: harnessHeaders() });
+    if (direct.ok) {
+        const payload = await direct.json();
+        if (payload?.success && payload?.data?.id)
+            return payload.data;
+    }
+    else if (direct.status !== 404) {
+        throw new Error(`LINE Harness friend lookup failed: ${await responseText(direct)}`);
+    }
+    const limit = 200;
+    for (let offset = 0; offset < 2000; offset += limit) {
+        const payload = await harnessJson(`${baseUrl}/api/friends?limit=${limit}&offset=${offset}&includeTags=false`);
+        const items = payload?.data?.items ?? [];
+        const friend = items.find((item) => item.id === lineUserId || item.lineUserId === lineUserId || item.line_user_id === lineUserId);
+        if (friend)
+            return friend;
+        if (!payload?.data?.hasNextPage)
+            break;
+    }
+    throw new Error(`LINE Harness friend not found for ${lineUserId}`);
+}
+async function sendViaLineHarnessApi(baseUrl, lineUserId, text) {
+    const friend = await resolveHarnessFriend(baseUrl, lineUserId);
+    const res = await fetch(`${baseUrl}/api/friends/${encodeURIComponent(friend.id)}/messages`, {
+        method: 'POST',
+        headers: harnessHeaders(),
+        body: JSON.stringify({ content: text, messageType: 'text' }),
+    });
+    if (!res.ok)
+        throw new Error(`LINE Harness send failed: ${await responseText(res)}`);
+}
 export async function sendLineMessage(lineUserId, text) {
     if (config.LINE_HARNESS_SEND_URL) {
+        const apiBase = lineHarnessApiBase(config.LINE_HARNESS_SEND_URL);
+        if (apiBase) {
+            await sendViaLineHarnessApi(apiBase, lineUserId, text);
+            return;
+        }
         const res = await fetch(config.LINE_HARNESS_SEND_URL, {
             method: 'POST',
             headers: {
@@ -33,7 +95,7 @@ export async function sendLineMessage(lineUserId, text) {
             body: JSON.stringify({ lineUserId, text, messages: [{ type: 'text', text }] }),
         });
         if (!res.ok)
-            throw new Error(`LINE Harness send failed: ${res.status} ${await res.text()}`);
+            throw new Error(`LINE Harness send failed: ${await responseText(res)}`);
         return;
     }
     if (!config.LINE_CHANNEL_ACCESS_TOKEN)
@@ -47,5 +109,5 @@ export async function sendLineMessage(lineUserId, text) {
         body: JSON.stringify({ to: lineUserId, messages: [{ type: 'text', text }] }),
     });
     if (!res.ok)
-        throw new Error(`LINE push failed: ${res.status} ${await res.text()}`);
+        throw new Error(`LINE push failed: ${await responseText(res)}`);
 }
