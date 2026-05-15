@@ -5,6 +5,18 @@ import { generateRevisionDraft } from './ai.js';
 import { findRelevantKnowledge, getDraftWithContext, getMonthlyRulesForReply, getRecentMessages, recordOutgoingAndApproval, saveDraft, saveSlackReview, supabase } from './db.js';
 import { sendLineMessage } from './line.js';
 export const slack = new WebClient(config.SLACK_BOT_TOKEN);
+function errorMessage(err) {
+    if (err instanceof Error)
+        return err.message;
+    if (typeof err === 'string')
+        return err;
+    try {
+        return JSON.stringify(err);
+    }
+    catch {
+        return String(err);
+    }
+}
 export function verifySlackSignature(rawBody, timestamp, signature) {
     if (!timestamp || !signature)
         return false;
@@ -59,9 +71,14 @@ export async function handleSlackInteraction(payload) {
     if (actionId === 'approve_send') {
         const draft = await getDraftWithContext(replyDraftId);
         const student = draft.conversations.students;
-        await sendLineMessage(student.line_user_id, draft.draft_text);
-        await recordOutgoingAndApproval(replyDraftId, 'approve', userId, draft.draft_text);
-        await slack.chat.update({ channel: payload.channel.id, ts: payload.message.ts, text: '送信済み', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `✅ LINE送信済み\n*送信文:*\n${draft.draft_text}` } }] });
+        try {
+            await sendLineMessage(student.line_user_id, draft.draft_text);
+            await recordOutgoingAndApproval(replyDraftId, 'approve', userId, draft.draft_text);
+            await slack.chat.update({ channel: payload.channel.id, ts: payload.message.ts, text: '送信済み', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `✅ LINE送信済み\n*送信文:*\n${draft.draft_text}` } }] });
+        }
+        catch (err) {
+            await slack.chat.update({ channel: payload.channel.id, ts: payload.message.ts, text: 'LINE送信失敗', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `⚠️ LINE送信に失敗しました\n*理由:*\n${errorMessage(err)}\n\n返信案はまだ送信されていません。LINE送信設定を確認してください。` } }] });
+        }
         return;
     }
     if (actionId === 'edit_send') {
@@ -99,9 +116,14 @@ async function handleModalSubmission(payload) {
     if (payload.view.callback_id === 'edit_send_modal') {
         const text = payload.view.state.values.text_block.text.value;
         const draft = await getDraftWithContext(meta.replyDraftId);
-        await sendLineMessage(draft.conversations.students.line_user_id, text);
-        await recordOutgoingAndApproval(meta.replyDraftId, 'edit_and_approve', userId, text);
-        await slack.chat.update({ channel: meta.channel, ts: meta.ts, text: '編集送信済み', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `✅ 編集後の文面をLINE送信しました\n*送信文:*\n${text}` } }] });
+        try {
+            await sendLineMessage(draft.conversations.students.line_user_id, text);
+            await recordOutgoingAndApproval(meta.replyDraftId, 'edit_and_approve', userId, text);
+            await slack.chat.update({ channel: meta.channel, ts: meta.ts, text: '編集送信済み', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `✅ 編集後の文面をLINE送信しました\n*送信文:*\n${text}` } }] });
+        }
+        catch (err) {
+            await slack.chat.update({ channel: meta.channel, ts: meta.ts, text: 'LINE送信失敗', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `⚠️ 編集後文面のLINE送信に失敗しました\n*理由:*\n${errorMessage(err)}\n\n返信案はまだ送信されていません。LINE送信設定を確認してください。` } }] });
+        }
     }
     if (payload.view.callback_id === 'revision_modal') {
         const comment = payload.view.state.values.comment_block.comment.value;

@@ -116,10 +116,22 @@ app.post('/monthly-rules', async (req, res, next) => {
         next(err);
     }
 });
+function errorMessage(err) {
+    if (err instanceof Error)
+        return err.message;
+    if (typeof err === 'string')
+        return err;
+    try {
+        return JSON.stringify(err);
+    }
+    catch {
+        return String(err);
+    }
+}
 app.use((err, _req, res, _next) => {
     console.error(err);
     if (!res.headersSent)
-        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ ok: false, error: errorMessage(err) });
 });
 app.listen(config.PORT, () => {
     console.log(`jinzai-line-agent listening on :${config.PORT}`);
