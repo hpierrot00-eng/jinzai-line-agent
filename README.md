@@ -7,15 +7,17 @@ Slack承認型のLINE学生対応AI MVPです。
 - LINE / LINE Harness inbound webhook
 - Supabase persistence
 - OpenClaw draft generation hook, with safe local fallback
-- Slack approval UI
+- Slack approval UI with customer LINE name/ID, status, classification, risk, recent conversation history, and proposed reply
 - `承認して送信` -> LINE automatic send
 - `編集して送信` -> Slack modal -> LINE send
 - `修正依頼` -> OpenClaw/fallback再ドラフト -> 新しいSlack承認カード投稿
 - `人間対応` / `却下`
 - Supabase approval and outgoing-message logs
+- LINE delivery-attempt logs with failed-send retry from Slack
 - Appointment extraction placeholder and `appointments` persistence
 - Knowledge lookup from approved/manual support answers
 - Monthly rule lookup for changing answers like payment dates or next-month schedules
+- Message templates for stable category-specific reply wording
 
 ## Flow
 
@@ -63,6 +65,8 @@ If `OPENCLAW_AGENT_URL` is empty, the app uses a conservative heuristic draft ge
 
 Run `supabase/schema.sql` in Supabase SQL editor.
 
+If the database already has the earlier MVP schema, you can run only the additive migration in `supabase/ops-hardening-2026-05-19.sql`.
+
 Optional for a quick first test: run `supabase/seed-mvp.sql` after editing the placeholder monthly values.
 
 The schema includes:
@@ -74,9 +78,11 @@ The schema includes:
 - `reply_drafts`
 - `approvals`
 - `slack_reviews`
+- `delivery_attempts`
 - `appointments`
 - `knowledge_items`
 - `monthly_rules`
+- `message_templates`
 
 `appointments` includes:
 
@@ -85,7 +91,7 @@ The schema includes:
 
 Sheets sync is intentionally outside the current MVP loop. Add it later after the approval/send/log flow is stable.
 
-## Knowledge and monthly rules
+## Knowledge, monthly rules, and templates
 
 Create a manual knowledge item:
 
@@ -105,10 +111,26 @@ curl -X POST https://YOUR_DOMAIN/monthly-rules \
   -d '{"ruleMonth":"2026-06","category":"payment","label":"2026年6月の支払い予定日","value":"6月末予定","notes":"確定前は断定しない"}'
 ```
 
+Create or update a reusable message template:
+
+```bash
+curl -X POST https://YOUR_DOMAIN/message-templates \
+  -H "authorization: Bearer $ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"key":"schedule_confirm","title":"日程確認の基本返信","category":"schedule","body":"ご連絡ありがとうございます。日程について確認いたします。候補日時やご希望があれば、あわせてお送りください。","priority":80}'
+```
+
 List approved-reply candidates that can be turned into knowledge:
 
 ```text
 GET /knowledge/candidates
+Authorization: Bearer $ADMIN_API_KEY
+```
+
+List active templates:
+
+```text
+GET /message-templates
 Authorization: Bearer $ADMIN_API_KEY
 ```
 
@@ -189,4 +211,7 @@ See `MVP_TEST_PLAN.md` for the step-by-step test plan.
    - incoming `messages`
    - `reply_drafts.status = sent`
    - `approvals.action = approve`
+   - `delivery_attempts.status = success`
    - outgoing `messages`
+
+Failure-path check: temporarily unset LINE send credentials, click approve, confirm Slack shows `同じ文面で再送`, `reply_drafts.status = send_failed`, `approvals.action = approve_send_failed`, and `delivery_attempts.status = failed`.

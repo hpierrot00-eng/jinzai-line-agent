@@ -43,17 +43,18 @@ function extractSchedule(text: string): Record<string, unknown> {
 function fallbackDraft(input: DraftContext): DraftResult {
   const text = input.text;
   const base = classify(text);
-  let reply = 'ご連絡ありがとうございます。内容を確認いたしました。担当より確認のうえ、順次ご案内いたします。';
+  const templateReply = selectTemplate(input.templates, base.category);
+  let reply = templateReply ?? 'ご連絡ありがとうございます。内容を確認いたしました。担当より確認のうえ、順次ご案内いたします。';
   const monthlyAnswer = monthlyRuleAnswer(input.monthlyRules);
   if (base.category === 'human_required' || base.risk_level === 'blocked' || base.risk_level === 'high') {
-    reply = sensitiveHandoffReply();
-  } else if (base.category === 'schedule') {
+    reply = templateReply ?? sensitiveHandoffReply();
+  } else if (!templateReply && base.category === 'schedule') {
     reply = monthlyAnswer ?? 'ご連絡ありがとうございます。日程について確認いたします。候補日時やご希望があれば、あわせてお送りください。';
-  } else if (base.category === 'agent_meeting') {
+  } else if (!templateReply && base.category === 'agent_meeting') {
     reply = 'ご連絡ありがとうございます。面談に関するご案内を確認し、必要なリンクや注意事項をお送りします。';
   }
   const topKnowledge = input.knowledge[0];
-  if (!monthlyAnswer && topKnowledge && base.risk_level !== 'blocked' && base.risk_level !== 'high') reply = `${reply}\n\n参考: ${topKnowledge.body}`;
+  if (!monthlyAnswer && !templateReply && topKnowledge && base.risk_level !== 'blocked' && base.risk_level !== 'high') reply = `${reply}\n\n参考: ${topKnowledge.body}`;
   return {
     ...base,
     needs_human_review: true,
@@ -61,6 +62,12 @@ function fallbackDraft(input: DraftContext): DraftResult {
     extracted_data: extractSchedule(text),
     suggested_next_action: base.risk_level === 'blocked' || base.risk_level === 'high' ? 'escalate' : 'approve_send',
   };
+}
+
+function selectTemplate(templates: DraftContext['templates'] = [], category: DraftResult['category']) {
+  const exact = templates.find((template) => template.category === category);
+  const general = templates.find((template) => template.category === 'general');
+  return exact?.body ?? general?.body ?? null;
 }
 
 function monthlyRuleAnswer(rules: MonthlyRule[]) {
@@ -121,6 +128,7 @@ export async function generateDraft(input: DraftContext): Promise<DraftResult> {
       policy: { auto_send_allowed: false, default_mode: 'draft_only', human_escalation_required_for: humanEscalationRequiredFor },
       output_schema: 'category,risk_level,confidence,needs_human_review,reply_text,reason,extracted_data,suggested_next_action',
       input,
+      template_hints: input.templates?.map((template) => ({ key: template.key, category: template.category, body: template.body })),
     }),
   });
   if (!res.ok) throw new Error(`OpenClaw draft failed: ${res.status} ${await res.text()}`);

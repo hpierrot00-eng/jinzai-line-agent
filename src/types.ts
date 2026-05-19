@@ -36,11 +36,22 @@ export type MonthlyRule = {
   notes?: string | null;
 };
 
+export type MessageTemplate = {
+  id: string;
+  key: string;
+  title: string;
+  category: string;
+  body: string;
+  priority: number;
+  status: string;
+};
+
 export type DraftContext = {
   text: string;
   history: unknown[];
   student?: unknown;
   knowledge: KnowledgeItem[];
   monthlyRules: MonthlyRule[];
+  templates?: MessageTemplate[];
   today: string;
 };

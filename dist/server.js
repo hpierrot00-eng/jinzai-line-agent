@@ -1,7 +1,7 @@
 import express from 'express';
 import { config } from './config.js';
 import { generateDraft } from './ai.js';
-import { createAppointmentIfExtracted, createKnowledgeItem, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, saveDraft, saveIncomingMessage, upsertMonthlyRule, upsertStudent } from './db.js';
+import { createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
 import { extractLineEvents, verifyLineSignature } from './line.js';
 import { handleSlackInteraction, postApprovalMessage, verifySlackSignature } from './slack.js';
 const app = express();
@@ -32,11 +32,12 @@ async function processInbound(body) {
             : /日程|予定|面談|いつ|何時|都合|空い|空き|予約|リスケ|変更/.test(event.text)
                 ? 'schedule'
                 : undefined;
-        const [knowledge, monthlyRules] = await Promise.all([
+        const [knowledge, monthlyRules, templates] = await Promise.all([
             findRelevantKnowledge(event.text, category),
             getMonthlyRulesForReply(event.text),
+            findMessageTemplates(category),
         ]);
-        const draftResult = await generateDraft({ text: event.text, history, student, knowledge, monthlyRules, today: new Date().toISOString() });
+        const draftResult = await generateDraft({ text: event.text, history, student, knowledge, monthlyRules, templates, today: new Date().toISOString() });
         const appointment = await createAppointmentIfExtracted(student.id, conversation.id, draftResult.extracted_data);
         const draft = await saveDraft(conversation.id, incoming.id, draftResult);
         const slackMessage = await postApprovalMessage(draft.id);
@@ -111,6 +112,28 @@ app.post('/monthly-rules', async (req, res, next) => {
             return;
         const rule = await upsertMonthlyRule(req.body);
         res.status(201).json({ ok: true, rule });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+app.get('/message-templates', async (req, res, next) => {
+    try {
+        if (!requireAdmin(req, res))
+            return;
+        const limit = req.query.limit ? Number(req.query.limit) : 50;
+        res.json(await listMessageTemplates(limit));
+    }
+    catch (err) {
+        next(err);
+    }
+});
+app.post('/message-templates', async (req, res, next) => {
+    try {
+        if (!requireAdmin(req, res))
+            return;
+        const template = await upsertMessageTemplate(req.body);
+        res.status(201).json({ ok: true, template });
     }
     catch (err) {
         next(err);

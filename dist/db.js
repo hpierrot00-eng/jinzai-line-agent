@@ -146,6 +146,50 @@ export async function recordOutgoingAndApproval(replyDraftId, action, approverSl
     await supabase.from('conversations').update({ status: 'waiting_customer', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', conversation.id);
     return { draft, conversation, student, approval: approval.data, message: message.data };
 }
+export async function recordApprovalAction(replyDraftId, action, approverSlackUserId, comment, afterText) {
+    const draft = await getDraftWithContext(replyDraftId);
+    const { data, error } = await supabase.from('approvals').insert({
+        client_id: config.DEFAULT_CLIENT_ID,
+        reply_draft_id: replyDraftId,
+        approver_slack_user_id: approverSlackUserId,
+        action,
+        comment: comment ?? null,
+        before_text: draft.draft_text,
+        after_text: afterText ?? null,
+    }).select('*').single();
+    if (error)
+        throw error;
+    return data;
+}
+export async function recordDeliveryAttempt(input) {
+    const { error } = await supabase.from('delivery_attempts').insert({
+        client_id: config.DEFAULT_CLIENT_ID,
+        reply_draft_id: input.replyDraftId,
+        line_user_id: input.lineUserId,
+        channel: 'line',
+        status: input.status,
+        error_message: input.errorMessage ?? null,
+        provider_response: input.providerResponse ?? {},
+        attempted_by_slack_user_id: input.attemptedBySlackUserId ?? null,
+        action: input.action,
+        message_text: input.text,
+    });
+    // Do not turn an already-successful LINE send into a false failure if the DB migration has not been applied yet.
+    if (error && /delivery_attempts|relation .* does not exist/i.test(error.message ?? ''))
+        return;
+    if (error)
+        throw error;
+}
+export async function markDraftSendFailed(replyDraftId, errorMessage, failedText) {
+    const draft = await getDraftWithContext(replyDraftId);
+    const extractedData = typeof draft.extracted_data === 'object' && draft.extracted_data !== null ? draft.extracted_data : {};
+    const { error } = await supabase
+        .from('reply_drafts')
+        .update({ status: 'send_failed', extracted_data: { ...extractedData, last_send_error: errorMessage, last_failed_text: failedText }, updated_at: new Date().toISOString() })
+        .eq('id', replyDraftId);
+    if (error)
+        throw error;
+}
 export async function saveSlackReview(replyDraftId, channel, ts, threadTs) {
     const { error } = await supabase.from('slack_reviews').insert({
         client_id: config.DEFAULT_CLIENT_ID,
@@ -262,6 +306,52 @@ export async function listKnowledgeCandidates(limit = 30) {
             createdAt: row.created_at,
         })),
     };
+}
+export async function findMessageTemplates(category, limit = 5) {
+    let query = supabase
+        .from('message_templates')
+        .select('id,key,title,category,body,priority,status')
+        .eq('client_id', config.DEFAULT_CLIENT_ID)
+        .eq('status', 'active')
+        .order('priority', { ascending: false })
+        .limit(limit);
+    if (category)
+        query = query.in('category', [category, 'general']);
+    const { data, error } = await query;
+    if (error) {
+        // Keep older deployments alive until the new schema migration is applied.
+        if (/message_templates|relation .* does not exist/i.test(error.message ?? ''))
+            return [];
+        throw error;
+    }
+    return (data ?? []);
+}
+export async function listMessageTemplates(limit = 50) {
+    const { data, error } = await supabase
+        .from('message_templates')
+        .select('*')
+        .eq('client_id', config.DEFAULT_CLIENT_ID)
+        .order('priority', { ascending: false })
+        .order('updated_at', { ascending: false })
+        .limit(limit);
+    if (error)
+        throw error;
+    return { ok: true, templates: data ?? [] };
+}
+export async function upsertMessageTemplate(input) {
+    const { data, error } = await supabase.from('message_templates').upsert({
+        client_id: config.DEFAULT_CLIENT_ID,
+        key: input.key,
+        title: input.title,
+        category: input.category ?? 'general',
+        body: input.body,
+        priority: input.priority ?? 0,
+        status: input.status ?? 'active',
+        updated_at: new Date().toISOString(),
+    }, { onConflict: 'client_id,key' }).select('*').single();
+    if (error)
+        throw error;
+    return data;
 }
 export async function createKnowledgeItem(input) {
     const { data, error } = await supabase.from('knowledge_items').insert({
