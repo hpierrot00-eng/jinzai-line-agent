@@ -4,6 +4,8 @@ import { config } from './config.js';
 import { generateRevisionDraft } from './ai.js';
 import { findRelevantKnowledge, getDraftWithContext, getMonthlyRulesForReply, getRecentMessages, markDraftSendFailed, recordApprovalAction, recordDeliveryAttempt, recordOutgoingAndApproval, saveDraft, saveSlackReview, supabase } from './db.js';
 import { sendLineMessage } from './line.js';
+import { selectWorkflowApplication, type WorkflowIntent } from './workflow.js';
+import type { InboundLineMessage } from './types.js';
 
 export const slack = new WebClient(config.SLACK_BOT_TOKEN);
 
@@ -77,6 +79,33 @@ function formatConversationHistory(messages: any[], currentDraftText: string) {
   return `*直近のやり取り*\n${lines.join('\n')}\n\n*この返信案で返す内容*\n${truncateText(currentDraftText, 650)}`;
 }
 
+function formatApplicationLabel(application: any) {
+  const scheduled = application.participation_scheduled_at
+    ? new Intl.DateTimeFormat('ja-JP', {
+      timeZone: config.WORKFLOW_TIMEZONE,
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).format(new Date(application.participation_scheduled_at))
+    : '日時未設定';
+  return `${application.application_id ?? application.id} / ${application.agent_name ?? 'エージェント未設定'} / ${scheduled}`;
+}
+
+function workflowSelectionValue(application: any, intent: WorkflowIntent, eventText: string) {
+  return JSON.stringify({
+    applicationRefId: application.id,
+    intent,
+    eventText: String(eventText ?? '').slice(0, 900),
+  });
+}
+
+function workflowSentText(sentTexts: string[]) {
+  if (sentTexts.length === 0) return '送信文なし';
+  return sentTexts.map((text, index) => `${index + 1}. ${truncateText(text, 500)}`).join('\n');
+}
+
 function retryBlocks(replyDraftId: string, text: string, error: string) {
   return [
     { type: 'section', text: { type: 'mrkdwn', text: `⚠️ LINE送信に失敗しました\n*理由:*\n${error}\n\n返信案はまだ送信されていません。設定確認後に再送できます。` } },
@@ -120,6 +149,59 @@ export async function postApprovalMessage(replyDraftId: string) {
   return result;
 }
 
+export async function postWorkflowNotification(workflow: any, event: InboundLineMessage, student: any) {
+  if (workflow.needsSelection) {
+    const elements = workflow.applications.slice(0, 5).map((application: any, index: number) => ({
+      type: 'button',
+      text: { type: 'plain_text', text: `候補${index + 1}で処理` },
+      action_id: 'workflow_select_application',
+      value: workflowSelectionValue(application, workflow.classification.intent, event.text),
+    }));
+
+    const blocks: any[] = [
+      { type: 'header', text: { type: 'plain_text', text: 'LINE自動処理: 申込候補の確認', emoji: true } },
+      { type: 'section', fields: [
+        { type: 'mrkdwn', text: `*顧客:*\n${customerLabel(student)}` },
+        { type: 'mrkdwn', text: `*分類:*\n${workflow.classification.intent} / ${workflow.classification.risk}` },
+      ] },
+      { type: 'section', text: { type: 'mrkdwn', text: `*受信文:*\n${truncateText(event.text, 650)}\n\n*理由:*\n${workflow.classification.reason}` } },
+      { type: 'section', text: { type: 'mrkdwn', text: `*候補申込:*\n${workflow.applications.map((application: any, index: number) => `${index + 1}. ${formatApplicationLabel(application)} / status: ${application.current_status}`).join('\n')}` } },
+      { type: 'actions', elements },
+    ];
+    const result = await slack.chat.postMessage({
+      channel: config.SLACK_APPROVAL_CHANNEL_ID,
+      text: `LINE自動処理候補確認: ${student?.display_name ?? student?.line_user_id ?? event.lineUserId}`,
+      blocks,
+    });
+    if (!result.ok) throw new Error(`Slack workflow notification failed: ${result.error}`);
+    return result;
+  }
+
+  const sentTexts = Array.isArray(workflow.sentTexts) ? workflow.sentTexts : [];
+  const application = workflow.application;
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'LINE自動処理済み', emoji: true } },
+    { type: 'section', fields: [
+      { type: 'mrkdwn', text: `*顧客:*\n${customerLabel(student)}` },
+      { type: 'mrkdwn', text: `*申込:*\n${application ? formatApplicationLabel(application) : '不明'}` },
+      { type: 'mrkdwn', text: `*分類:*\n${workflow.classification?.intent ?? 'unknown'} / ${workflow.classification?.risk ?? 'unknown'}` },
+      { type: 'mrkdwn', text: `*dry-run:*\n${workflow.dryRun ? 'true' : 'false'}` },
+    ] },
+    { type: 'section', text: { type: 'mrkdwn', text: `*受信文:*\n${truncateText(event.text, 650)}\n\n*自動送信した内容:*\n${workflowSentText(sentTexts)}` } },
+    { type: 'context', elements: [{ type: 'mrkdwn', text: `理由: ${truncateText(workflow.classification?.reason ?? 'なし', 250)}` }] },
+  ];
+  const result = await slack.chat.postMessage({
+    channel: config.SLACK_APPROVAL_CHANNEL_ID,
+    text: `LINE自動処理済み: ${student?.display_name ?? student?.line_user_id ?? event.lineUserId}`,
+    blocks,
+  });
+  if (!result.ok) throw new Error(`Slack workflow notification failed: ${result.error}`);
+  if (application?.id) {
+    await supabase.from('referral_applications').update({ slack_notified_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', application.id);
+  }
+  return result;
+}
+
 export async function handleSlackInteraction(payload: any) {
   const action = payload?.actions?.[0];
   const actionId = action?.action_id;
@@ -127,7 +209,27 @@ export async function handleSlackInteraction(payload: any) {
   const userId = payload?.user?.id;
 
   if (payload.type === 'view_submission') return handleModalSubmission(payload);
-  if (!actionId || !replyDraftId || !userId) return;
+  if (!actionId || !userId) return;
+
+  if (actionId === 'workflow_select_application') {
+    const selection = JSON.parse(action.value || '{}');
+    const result = await selectWorkflowApplication({
+      applicationRefId: selection.applicationRefId,
+      intent: selection.intent,
+      eventText: selection.eventText ?? '',
+    });
+    await slack.chat.update({
+      channel: payload.channel.id,
+      ts: payload.message.ts,
+      text: '申込選択済み',
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: `✅ 選択した申込で自動処理しました\n*送信内容:*\n${workflowSentText(result.sentTexts ?? [])}` } },
+      ],
+    });
+    return;
+  }
+
+  if (!replyDraftId) return;
 
   if (actionId === 'approve_send' || actionId === 'retry_send') {
     const draft = await getDraftWithContext(replyDraftId);

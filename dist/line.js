@@ -121,12 +121,56 @@ async function sendViaLineHarnessApi(baseUrl, lineUserId, text) {
     if (!res.ok)
         throw new Error(`LINE Harness send failed: ${await responseText(res)}`);
 }
+export async function syncLineHarnessTags(lineUserId, tags) {
+    if (!config.LINE_HARNESS_TAG_SYNC_ENABLED || tags.length === 0 || !config.LINE_HARNESS_SEND_URL)
+        return;
+    try {
+        if (config.LINE_HARNESS_TAG_SYNC_URL) {
+            const res = await fetch(config.LINE_HARNESS_TAG_SYNC_URL, {
+                method: 'POST',
+                headers: harnessHeaders(),
+                body: JSON.stringify({ lineUserId, tags, source: 'jinzai-line-agent' }),
+            });
+            if (!res.ok)
+                throw new Error(`LINE Harness tag sync failed: ${await responseText(res)}`);
+            return;
+        }
+        const apiBase = lineHarnessApiBase(config.LINE_HARNESS_SEND_URL);
+        if (!apiBase)
+            return;
+        const friend = await resolveHarnessFriend(apiBase, lineUserId);
+        const payload = JSON.stringify({ tags, source: 'jinzai-line-agent' });
+        const tagRes = await fetch(`${apiBase}/api/friends/${encodeURIComponent(friend.id)}/tags`, {
+            method: 'POST',
+            headers: harnessHeaders(),
+            body: payload,
+        });
+        if (tagRes.ok)
+            return;
+        if (tagRes.status !== 404 && tagRes.status !== 405)
+            throw new Error(`LINE Harness tag sync failed: ${await responseText(tagRes)}`);
+        const patchRes = await fetch(`${apiBase}/api/friends/${encodeURIComponent(friend.id)}`, {
+            method: 'PATCH',
+            headers: harnessHeaders(),
+            body: payload,
+        });
+        if (!patchRes.ok)
+            throw new Error(`LINE Harness friend tag patch failed: ${await responseText(patchRes)}`);
+    }
+    catch (err) {
+        // Tags are an operator-facing mirror only. DB status remains the source of truth, so tag sync must never block workflows.
+        console.warn('LINE Harness tag sync skipped:', err instanceof Error ? err.message : err);
+    }
+}
 export async function sendLineMessage(lineUserId, text) {
+    if (config.LINE_SEND_DRY_RUN) {
+        return { dryRun: true, lineUserId, text };
+    }
     if (config.LINE_HARNESS_SEND_URL) {
         const apiBase = lineHarnessApiBase(config.LINE_HARNESS_SEND_URL);
         if (apiBase) {
             await sendViaLineHarnessApi(apiBase, lineUserId, text);
-            return;
+            return { dryRun: false };
         }
         const res = await fetch(config.LINE_HARNESS_SEND_URL, {
             method: 'POST',
@@ -138,7 +182,7 @@ export async function sendLineMessage(lineUserId, text) {
         });
         if (!res.ok)
             throw new Error(`LINE Harness send failed: ${await responseText(res)}`);
-        return;
+        return { dryRun: false };
     }
     if (!config.LINE_CHANNEL_ACCESS_TOKEN)
         throw new Error('Set LINE_HARNESS_SEND_URL or LINE_CHANNEL_ACCESS_TOKEN');
@@ -152,4 +196,5 @@ export async function sendLineMessage(lineUserId, text) {
     });
     if (!res.ok)
         throw new Error(`LINE push failed: ${await responseText(res)}`);
+    return { dryRun: false };
 }

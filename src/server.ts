@@ -3,7 +3,9 @@ import { config } from './config.js';
 import { generateDraft } from './ai.js';
 import { createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
 import { extractLineEvents, findLineDisplayName, verifyLineSignature } from './line.js';
-import { handleSlackInteraction, postApprovalMessage, verifySlackSignature } from './slack.js';
+import { handleSlackInteraction, postApprovalMessage, postWorkflowNotification, verifySlackSignature } from './slack.js';
+import { rebuildWorkflowJobs, runWorkflowTick, processWorkflowReply, WORKFLOW_STATUSES } from './workflow.js';
+import { syncSheetsToSupabase, writeApplicationsToSheets } from './sheets.js';
 
 const app = express();
 
@@ -25,12 +27,32 @@ function requireAdmin(req: express.Request, res: express.Response) {
 async function processInbound(body: any) {
   const events = extractLineEvents(body);
   const results = [];
+  const dryRun = Boolean(body?.dryRun);
   for (const event of events) {
     const displayName = event.displayName ?? await findLineDisplayName(event.lineUserId) ?? undefined;
     const eventWithProfile = { ...event, displayName };
     const student = await upsertStudent(eventWithProfile);
     const conversation = await getOrCreateConversation(student.id);
     const incoming = await saveIncomingMessage(eventWithProfile, student.id, conversation.id);
+
+    try {
+      const workflow = await processWorkflowReply({ student, event: eventWithProfile, dryRun });
+      if (workflow.handled) {
+        const slackMessage = await postWorkflowNotification(workflow, eventWithProfile, student);
+        results.push({
+          studentId: student.id,
+          conversationId: conversation.id,
+          messageId: incoming.id,
+          workflow,
+          slackTs: slackMessage?.ts,
+        });
+        continue;
+      }
+    } catch (err) {
+      // Missing workflow tables should not break the pre-existing Slack approval flow during rollout.
+      console.warn('workflow auto-processing skipped:', errorMessage(err));
+    }
+
     const history = await getRecentMessages(conversation.id);
     const category = /支払|支払い|入金|報酬|料金|返金|契約|条件/.test(eventWithProfile.text)
       ? 'payment'
@@ -120,6 +142,49 @@ app.post('/message-templates', async (req, res, next) => {
     if (!requireAdmin(req, res)) return;
     const template = await upsertMessageTemplate(req.body);
     res.status(201).json({ ok: true, template });
+  } catch (err) { next(err); }
+});
+
+app.post('/sheets/sync', async (req, res, next) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const result = await syncSheetsToSupabase({ rows: req.body?.rows, dryRun: Boolean(req.body?.dryRun) });
+    const applicationIds = result.results
+      .map((item: any) => item.applicationRefId)
+      .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
+    const jobs = !result.dryRun && applicationIds.length > 0
+      ? await rebuildWorkflowJobs({ applicationIds })
+      : null;
+    res.json({ ...result, jobs });
+  } catch (err) { next(err); }
+});
+
+app.post('/sheets/writeback', async (req, res, next) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const applicationIds = Array.isArray(req.body?.applicationIds) ? req.body.applicationIds : undefined;
+    res.json(await writeApplicationsToSheets({ applicationIds, dryRun: Boolean(req.body?.dryRun) }));
+  } catch (err) { next(err); }
+});
+
+app.get('/workflow/statuses', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  res.json({ ok: true, statuses: WORKFLOW_STATUSES });
+});
+
+app.post('/workflow/rebuild-jobs', async (req, res, next) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const applicationIds = Array.isArray(req.body?.applicationIds) ? req.body.applicationIds : undefined;
+    res.json(await rebuildWorkflowJobs({ applicationIds, dryRun: Boolean(req.body?.dryRun) }));
+  } catch (err) { next(err); }
+});
+
+app.post('/workflow/tick', async (req, res, next) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const limit = req.body?.limit ? Number(req.body.limit) : 20;
+    res.json(await runWorkflowTick({ limit, dryRun: Boolean(req.body?.dryRun) }));
   } catch (err) { next(err); }
 });
 

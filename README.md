@@ -18,10 +18,14 @@ Slack承認型のLINE学生対応AI MVPです。
 - Knowledge lookup from approved/manual support answers
 - Monthly rule lookup for changing answers like payment dates or next-month schedules
 - Message templates for stable category-specific reply wording
+- Application-based workflow automation for same-day reminders, post-participation forms, and TS/bank-account forms
+- Google Sheets sync/writeback for the operator ledger, with configurable column names and dry-run mode
+- Low-risk `確認しました` / `回答しました` replies can be auto-processed while ambiguous or risky replies still go to Slack for human confirmation
+- Optional LINE Harness tag mirroring for operator visibility; Supabase remains the source of truth
 
 ## Flow
 
-LINE inbound -> Supabase -> OpenClaw/fallback draft -> Slack approval/edit/revision -> LINE send -> Supabase log
+LINE inbound -> Supabase -> workflow classification -> auto-send for low-risk fixed replies, otherwise OpenClaw/fallback draft -> Slack approval/edit/revision -> LINE send -> Supabase log -> optional Sheets writeback
 
 Draft generation uses, in this order:
 
@@ -30,7 +34,7 @@ Draft generation uses, in this order:
 3. matching `knowledge_items`
 4. matching `monthly_rules` for “今月” / “来月” / explicit month questions
 
-Everything starts as `draft_only`. Nothing is auto-sent without Slack approval.
+General inquiries stay Slack approval-first. Workflow replies that clearly match `確認しました` or `回答しました` are treated as low risk and can be auto-sent; use `LINE_SEND_DRY_RUN=true` while testing.
 
 ## Setup
 
@@ -58,6 +62,19 @@ Optional:
 - `OPENCLAW_AGENT_URL`
 - `OPENCLAW_AGENT_TOKEN`
 - `ADMIN_API_KEY`
+- `LINE_HARNESS_TAG_SYNC_ENABLED` / `LINE_HARNESS_TAG_SYNC_URL` for optional LINE Harness tag mirroring
+- `LINE_SEND_DRY_RUN=true` to record planned LINE sends without sending
+- `GOOGLE_SHEETS_SPREADSHEET_ID`
+- `GOOGLE_SHEETS_TAB_NAME`
+- `GOOGLE_SERVICE_ACCOUNT_EMAIL`
+- `GOOGLE_PRIVATE_KEY`
+- `SHEETS_COLUMN_MAP_JSON`
+- `SHEETS_WRITE_DRY_RUN=true` to preview Sheets writeback without writing
+- `POST_PARTICIPATION_FORM_URL`
+- `BANK_ACCOUNT_FORM_URL`
+- `WORKFLOW_TIMEZONE=Asia/Tokyo`
+- `SAME_DAY_REMINDER_OFFSET_HOURS=2`
+- `POST_FORM_DELAY_HOURS=2`
 
 If `OPENCLAW_AGENT_URL` is empty, the app uses a conservative heuristic draft generator so the approval loop still works.
 
@@ -66,6 +83,8 @@ If `OPENCLAW_AGENT_URL` is empty, the app uses a conservative heuristic draft ge
 Run `supabase/schema.sql` in Supabase SQL editor.
 
 If the database already has the earlier MVP schema, you can run only the additive migration in `supabase/ops-hardening-2026-05-19.sql`.
+
+For workflow automation on an existing database, also run `supabase/workflow-automation-2026-05-20.sql`.
 
 Optional for a quick first test: run `supabase/seed-mvp.sql` after editing the placeholder monthly values.
 
@@ -80,6 +99,10 @@ The schema includes:
 - `slack_reviews`
 - `delivery_attempts`
 - `appointments`
+- `referral_applications`
+- `application_workflow_states`
+- `student_workflow_states`
+- `workflow_jobs`
 - `knowledge_items`
 - `monthly_rules`
 - `message_templates`
@@ -89,7 +112,113 @@ The schema includes:
 - `appointment_type`
 - `scheduled_at`
 
-Sheets sync is intentionally outside the current MVP loop. Add it later after the approval/send/log flow is stable.
+`student_workflow_states` remains for compatibility with the first MVP. New automation uses `referral_applications` and `application_workflow_states`, because one student can have multiple agent applications.
+
+## Workflow automation
+
+Workflow status is stored in Supabase per application, not per student. LINE Harness tags are only mirrored for human operators when enabled.
+
+Current status values:
+
+- `interested`
+- `schedule_pending`
+- `application_info_collecting`
+- `pre_caution_sent`
+- `pre_caution_confirmation_waiting`
+- `pre_caution_confirmed`
+- `same_day_reminder_pending`
+- `same_day_reminder_sent`
+- `post_participation_form_waiting`
+- `bank_form_send_pending`
+- `bank_account_waiting`
+- `payment_ready`
+- `human_required`
+
+Sheets is treated as `1 row = 1 application`. Default recommended columns:
+
+- `application_id`
+- `student_id`
+- `LINEユーザーID`
+- `学生名`
+- `提携エージェント名`
+- `参加予定日時`
+- `現在ステータス`
+- `自動送信対象`
+- `人間対応フラグ`
+- `当日リマインド送信日時`
+- `参加確認フォーム送信日時`
+- `参加確認フォーム回答日時`
+- `TS/銀行口座フォーム送信日時`
+- `TS/銀行口座フォーム回答日時`
+- `最終LINE送信日時`
+- `Slack通知日時`
+- `エラー内容`
+- `備考`
+
+If the production sheet uses different headers, set `SHEETS_COLUMN_MAP_JSON`. Only the headers you want to override are needed:
+
+```json
+{
+  "applicationId": "申込ID",
+  "lineUserId": "LINE ID",
+  "studentName": "氏名",
+  "participationScheduledAt": "参加日時"
+}
+```
+
+Sync Sheets into Supabase:
+
+```text
+POST /sheets/sync
+Authorization: Bearer $ADMIN_API_KEY
+```
+
+Use `{"dryRun": true}` or pass test `rows` in the body to preview without writing DB rows.
+
+Write Supabase status/timestamps back to Sheets:
+
+```text
+POST /sheets/writeback
+Authorization: Bearer $ADMIN_API_KEY
+```
+
+`SHEETS_WRITE_DRY_RUN=true` makes this endpoint return planned cell updates without touching the production sheet.
+
+Rebuild scheduled jobs from current applications:
+
+```text
+POST /workflow/rebuild-jobs
+Authorization: Bearer $ADMIN_API_KEY
+```
+
+This creates idempotent application-level jobs:
+
+- `same_day_participation_reminder`: participation time minus `SAME_DAY_REMINDER_OFFSET_HOURS`
+- `post_participation_form`: participation time plus `POST_FORM_DELAY_HOURS`
+
+Run due jobs from Render Cron or another scheduler:
+
+```text
+POST /workflow/tick
+Authorization: Bearer $ADMIN_API_KEY
+```
+
+Use `{"dryRun": true}` to render planned LINE messages without sending. A typical Render Cron can call `/workflow/tick` every 5-15 minutes.
+
+List valid statuses:
+
+```text
+GET /workflow/statuses
+Authorization: Bearer $ADMIN_API_KEY
+```
+
+MVP templates seeded by the workflow migration:
+
+- `confirmation_ack`
+- `form_answered_ack`
+- `same_day_participation_reminder`
+- `post_participation_form`
+- `bank_account_form`
 
 ## Knowledge, monthly rules, and templates
 
