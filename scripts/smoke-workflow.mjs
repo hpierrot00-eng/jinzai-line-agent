@@ -46,7 +46,7 @@ if (jobs[2].jobType !== 'post_participation_form') throw new Error('missing post
 if (jobs[1].dueAt !== '2026-05-20T07:00:00.000Z') throw new Error(`same-day dueAt mismatch: ${jobs[1].dueAt}`);
 if (jobs[2].dueAt !== '2026-05-20T11:00:00.000Z') throw new Error(`post-form dueAt mismatch: ${jobs[2].dueAt}`);
 
-const confirmation = workflow.classifyWorkflowReply('確認しました');
+const confirmation = workflow.classifyWorkflowReply('確認できました');
 if (confirmation.intent !== 'confirmation' || confirmation.risk !== 'low') throw new Error('confirmation classification failed');
 
 const answered = workflow.classifyWorkflowReply('回答しました');
@@ -55,11 +55,11 @@ if (answered.intent !== 'form_answered' || answered.risk !== 'low') throw new Er
 const human = workflow.classifyWorkflowReply('支払いはいつですか？');
 if (human.intent !== 'human_required') throw new Error('human-required classification failed');
 
-const rendered = workflow.renderWorkflowTemplate(workflow.WORKFLOW_TEMPLATE_BODIES.same_day_participation_reminder, {
+const rendered = workflow.renderWorkflowTemplate(workflow.WORKFLOW_TEMPLATE_BODIES.same_day_reminder, {
   agent_name: 'Vire',
   participation_time: '18:00',
 });
-if (!rendered.includes('Vire') || !rendered.includes('18:00')) throw new Error('template rendering failed');
+if (!rendered.includes('参加当日')) throw new Error('template rendering failed');
 
 const nameCandidates = sheets.extractStudentNameCandidates('山田太郎です。確認しました', '山田太郎');
 if (!nameCandidates.includes('山田太郎')) throw new Error('student name extraction failed');

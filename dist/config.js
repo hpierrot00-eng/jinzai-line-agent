@@ -8,6 +8,15 @@ const boolFromEnv = z.preprocess((value) => {
         return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
     return value;
 }, z.boolean());
+const mergedEnv = {
+    ...process.env,
+    GOOGLE_SHEETS_SPREADSHEET_ID: process.env.GOOGLE_SHEETS_SPREADSHEET_ID || process.env.CUSTOMER_SHEET_SPREADSHEET_ID,
+    GOOGLE_SHEETS_TAB_NAME: process.env.GOOGLE_SHEETS_TAB_NAME || process.env.CUSTOMER_SHEET_TAB_NAME,
+    POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID: process.env.POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID || process.env.PARTICIPATION_FORM_SPREADSHEET_ID,
+    POST_PARTICIPATION_RESPONSES_TAB_NAME: process.env.POST_PARTICIPATION_RESPONSES_TAB_NAME || process.env.PARTICIPATION_FORM_TAB_NAME,
+    BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID: process.env.BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID || process.env.BANK_FORM_SPREADSHEET_ID,
+    BANK_ACCOUNT_RESPONSES_TAB_NAME: process.env.BANK_ACCOUNT_RESPONSES_TAB_NAME || process.env.BANK_FORM_TAB_NAME,
+};
 const envSchema = z.object({
     PORT: z.coerce.number().default(8787),
     PUBLIC_BASE_URL: z.string().optional(),
@@ -47,4 +56,4 @@ const envSchema = z.object({
     OPENCLAW_MODEL_NAME: z.string().default('openclaw'),
     ADMIN_API_KEY: z.string().optional().default(''),
 });
-export const config = envSchema.parse(process.env);
+export const config = envSchema.parse(mergedEnv);

@@ -2,6 +2,7 @@ import { config } from './config.js';
 import { sendLineMessage, syncLineHarnessTags } from './line.js';
 import { supabase } from './db.js';
 import { writeApplicationsToSheets } from './sheets.js';
+import { WebClient } from '@slack/web-api';
 export const WORKFLOW_STATUSES = [
     'interested',
     'schedule_pending',
@@ -17,13 +18,67 @@ export const WORKFLOW_STATUSES = [
     'payment_ready',
     'human_required',
 ];
+const workflowSlack = new WebClient(config.SLACK_BOT_TOKEN);
 export const WORKFLOW_TEMPLATE_BODIES = {
-    confirmation_ack: 'ご確認ありがとうございます。当日はよろしくお願いいたします。',
-    form_answered_ack: 'ご回答ありがとうございます。内容を確認いたします。',
-    pre_participation_caution: 'ご参加前の注意事項をお送りします。\n\n{{caution_text}}\n\n確認できましたら「確認しました」とご返信ください。',
-    same_day_participation_reminder: '本日、{{agent_name}}のご参加予定日です。開始時間は{{participation_time}}です。忘れずにご参加ください。',
-    post_participation_form: 'ご参加ありがとうございました。参加確認のため、以下のフォームにご回答をお願いいたします。\n{{post_participation_form_url}}',
-    bank_account_form: 'ご回答ありがとうございます。謝礼金のお支払いに必要な情報入力をお願いいたします。\n{{bank_account_form_url}}',
+    confirm_ack_reply: 'ご確認ありがとうございます！\nまた、わからない事などありましたら気軽に仰ってください！\n\n引き続きよろしくお願い致します！',
+    answered_ack_reply: 'ご回答ありがとうございます！\n\n引き続きよろしくお願い致します！',
+    pre_participation_caution: `面談のお時間が近づいてきましたね！
+面談参加にあたっての注意事項だけ共有しておきます！
+※面談参加中、参加後について
+
+- オンライン面談は画面オン、マイクオンでの参加お願いいたします！
+- 参加する姿勢
+
+姿勢としては就活に興味あるけどどうしたらいいか分からない。
+
+自分の力だけだときついから良いエージェントさんを探してる。
+
+などのような感じで受けてもらえればと思います！
+
+- 就活が終わっていても終わりました！はNGでお願いいたします！
+
+（まだ続けてます！でお願いいたします。うまく濁してもらえれば大丈夫です）
+- 就活支援金がもらえるから参加したは絶対にNGでお願いいたします！
+- 今回どこで知ってくれたのかと聞かれた場合「就活に力を入れてる友達から紹介してもらいました！名前を聞かれたら佐藤ゆうと」とご回答ください！
+- 2回目までの面談参加。基本1回目の面談の際に次の面談の日時を再度調整されるので、そこで日時の調整をしていただいて、2回目の面談も参加していただけたらと思います！！
+3回目以降はそのまま使い続けたいなと感じられたら参加していただけたらと思います！
+
+３回目以降に関しては興味があれば出ていただければ幸いです！
+
+もし、参加したエージェントが合わなかった場合はブロックなどはせずに、キャンセルしていただいても大丈夫です！
+
+※就活支援金(2500円）について
+
+就活支援金は弊社よりお支払いいたしますので、
+面談時に就活支援金についてお話しいただく必要はございません！
+就活支援金の入金は翌々月の２０日です！
+
+（非承認になってしまった場合報酬が支払われないので、ご了承ください）
+
+上記注意事項を徹底に守っていただくことや2回目参加などして企業紹介など受けていただければ基本承認になるのでご安心ください！☺️確実に承認にしたい場合は2回目を出ていただき、企業紹介など受けてもらえると確率が圧倒的に高くなります！
+
+分からない事などありましたら気軽にご連絡ください！
+
+確認できましたら「確認できました」と送っていただけると助かります！
+
+引き続きよろしくお願いいたします！`,
+    same_day_reminder: '参加当日になりました！再度、注意事項なども確認してご参加いただければと思います！\n引き続きよろしくお願いいたします！',
+    post_participation_form: '面談ご参加お疲れ様です！\n\n我々としても参加された方にはできる限り就活支援金をお渡ししたいので、以下の回答フォームへのご入力をお願いいたします！\n{{post_participation_form_url}}\n\nお手数ですが、よろしくお願いいたします！',
+    bank_account_form: 'この度は面談ご参加ありがとうございます！\n就活支援金のお渡しは銀行振り込みで対応させて頂きます！\n\n下記のフォームのご回答よろしくお願いいたします！\n入金は翌々月の20日になります！\n\n{{bank_account_form_url}}',
+    confirmation_ack: 'ご確認ありがとうございます！\nまた、わからない事などありましたら気軽に仰ってください！\n\n引き続きよろしくお願い致します！',
+    form_answered_ack: 'ご回答ありがとうございます！\n\n引き続きよろしくお願い致します！',
+    same_day_participation_reminder: '参加当日になりました！再度、注意事項なども確認してご参加いただければと思います！\n引き続きよろしくお願いいたします！',
+};
+const DEFAULT_TEMPLATE_SEND_MODES = {
+    pre_participation_caution: 'approval_required',
+    same_day_reminder: 'auto_send',
+    post_participation_form: 'auto_send',
+    bank_account_form: 'auto_send',
+    confirm_ack_reply: 'auto_send',
+    answered_ack_reply: 'auto_send',
+    same_day_participation_reminder: 'auto_send',
+    confirmation_ack: 'auto_send',
+    form_answered_ack: 'auto_send',
 };
 const STATUS_TO_TAG = {
     interested: '興味あり',
@@ -68,7 +123,7 @@ export function classifyWorkflowReply(text) {
     if (/回答しました|回答済|入力しました|入力済|送信しました|提出しました|フォーム.*(回答|入力|送信|提出)/.test(normalized)) {
         return { intent: 'form_answered', risk: 'low', reason: 'フォーム回答完了を示す定型返信。' };
     }
-    if (/確認しました|確認済|確認いたしました|了解です|承知しました|見ました|大丈夫です/.test(normalized)) {
+    if (/確認しました|確認できました|確認出来ました|確認済|確認いたしました|了解です|承知しました|見ました|大丈夫です/.test(normalized)) {
         return { intent: 'confirmation', risk: 'low', reason: '参加前注意事項などの確認完了を示す定型返信。' };
     }
     if (/支払|支払い|報酬|給与|謝礼|入金|返金|キャンセル|辞退|変更|日程変更|リスケ|遅刻|欠席|クレーム|苦情|無理|できない|わからない|分からない|\?|\？/.test(normalized)) {
@@ -76,17 +131,61 @@ export function classifyWorkflowReply(text) {
     }
     return { intent: 'human_required', risk: 'high', reason: '自動処理対象の定型返信として確信できない返信。' };
 }
-async function getTemplateBody(key) {
+function fallbackTemplate(key) {
+    const body = WORKFLOW_TEMPLATE_BODIES[key];
+    if (!body)
+        throw new Error(`Missing workflow template: ${key}`);
+    return {
+        key,
+        title: key,
+        body,
+        version: 1,
+        sendMode: DEFAULT_TEMPLATE_SEND_MODES[key] ?? 'approval_required',
+        status: 'active',
+    };
+}
+async function getWorkflowTemplate(key) {
     const { data, error } = await supabase
         .from('message_templates')
-        .select('body')
+        .select('key,title,body,version,status,send_mode')
         .eq('client_id', config.DEFAULT_CLIENT_ID)
         .eq('key', key)
         .eq('status', 'active')
         .maybeSingle();
-    if (error)
+    if (error) {
+        if (/message_templates|relation .* does not exist/i.test(error.message ?? ''))
+            return fallbackTemplate(key);
+        if (/version|send_mode|schema cache/i.test(error.message ?? '')) {
+            const legacy = await supabase
+                .from('message_templates')
+                .select('key,title,body,status')
+                .eq('client_id', config.DEFAULT_CLIENT_ID)
+                .eq('key', key)
+                .eq('status', 'active')
+                .maybeSingle();
+            if (legacy.error || !legacy.data)
+                return fallbackTemplate(key);
+            return {
+                key: legacy.data.key,
+                title: legacy.data.title ?? legacy.data.key,
+                body: legacy.data.body ?? fallbackTemplate(key).body,
+                version: 1,
+                sendMode: DEFAULT_TEMPLATE_SEND_MODES[key] ?? 'approval_required',
+                status: legacy.data.status ?? 'active',
+            };
+        }
         throw error;
-    return data?.body ?? WORKFLOW_TEMPLATE_BODIES[key];
+    }
+    if (!data)
+        return fallbackTemplate(key);
+    return {
+        key: data.key,
+        title: data.title ?? data.key,
+        body: data.body ?? fallbackTemplate(key).body,
+        version: Number(data.version ?? 1),
+        sendMode: data.send_mode ?? DEFAULT_TEMPLATE_SEND_MODES[key] ?? 'approval_required',
+        status: data.status ?? 'active',
+    };
 }
 function templateValues(application) {
     return {
@@ -126,6 +225,9 @@ async function insertDeliveryAttempt(input) {
         provider_response: input.providerResponse ?? {},
         action: input.action,
         message_text: input.text,
+        template_key: input.templateKey ?? null,
+        template_version: input.templateVersion ?? null,
+        attempted_by_slack_user_id: input.attemptedBySlackUserId ?? null,
     };
     const { error } = await supabase.from('delivery_attempts').insert(payload);
     if (!error)
@@ -134,6 +236,8 @@ async function insertDeliveryAttempt(input) {
         return;
     if (/application_id|schema cache/i.test(error.message ?? '')) {
         delete payload.application_id;
+        delete payload.template_key;
+        delete payload.template_version;
         const retry = await supabase.from('delivery_attempts').insert(payload);
         if (!retry.error || /delivery_attempts|relation .* does not exist/i.test(retry.error.message ?? ''))
             return;
@@ -165,22 +269,22 @@ async function recordOutgoing(application, text, action) {
     if (error)
         throw error;
 }
-async function sendWorkflowMessage(application, text, action, dryRun) {
+async function sendWorkflowMessage(application, text, action, dryRun, template, attemptedBySlackUserId) {
     if (!application.line_user_id)
         throw new Error(`Missing LINE user id for application ${application.application_id}`);
     if (dryRun) {
-        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'dry_run', action });
+        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'dry_run', action, templateKey: template?.key, templateVersion: template?.version, attemptedBySlackUserId });
         return { dryRun: true };
     }
     try {
         const providerResponse = await sendLineMessage(application.line_user_id, text);
-        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'success', action, providerResponse });
+        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'success', action, providerResponse, templateKey: template?.key, templateVersion: template?.version, attemptedBySlackUserId });
         await recordOutgoing(application, text, action);
         return { dryRun: false };
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'failed', errorMessage: message, action });
+        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'failed', errorMessage: message, action, templateKey: template?.key, templateVersion: template?.version, attemptedBySlackUserId });
         await setApplicationStatus(application, 'human_required', { error_message: message });
         throw err;
     }
@@ -285,7 +389,7 @@ export async function rebuildWorkflowJobs(input = {}) {
                 application_id: application.id,
                 student_id: application.student_id,
                 job_type: 'same_day_participation_reminder',
-                template_key: 'same_day_participation_reminder',
+                template_key: 'same_day_reminder',
                 due_at: reminderDueAt,
                 idempotency_key: `${application.id}:same_day_participation_reminder`,
                 metadata: templateValues(application),
@@ -349,6 +453,101 @@ function statusPatchForJob(job) {
     }
     return { status: null, patch: { last_line_sent_at: sentAt } };
 }
+function workflowApprovalBlocks(job, application, template, text) {
+    const scheduled = application.participation_scheduled_at
+        ? new Intl.DateTimeFormat('ja-JP', {
+            timeZone: config.WORKFLOW_TIMEZONE,
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+        }).format(new Date(application.participation_scheduled_at))
+        : '日時未設定';
+    return [
+        { type: 'header', text: { type: 'plain_text', text: '参加前注意事項 承認待ち', emoji: true } },
+        { type: 'section', fields: [
+                { type: 'mrkdwn', text: `*顧客:*\n${application.student_name ?? application.students?.display_name ?? application.line_user_id ?? '不明'}` },
+                { type: 'mrkdwn', text: `*申込:*\n${application.application_id} / ${application.agent_name ?? '案件未設定'} / ${scheduled}` },
+                { type: 'mrkdwn', text: `*template:*\n${template.key} v${template.version}` },
+                { type: 'mrkdwn', text: `*send_mode:*\n${template.sendMode}` },
+            ] },
+        { type: 'section', text: { type: 'mrkdwn', text: `*送信予定文面:*\n${text.slice(0, 2900)}` } },
+        { type: 'actions', elements: [
+                { type: 'button', text: { type: 'plain_text', text: '承認して送信' }, style: 'primary', action_id: 'workflow_approve_send', value: job.id },
+                { type: 'button', text: { type: 'plain_text', text: '編集して送信' }, action_id: 'workflow_edit_send', value: job.id },
+                { type: 'button', text: { type: 'plain_text', text: '人間対応' }, action_id: 'workflow_escalate', value: job.id },
+            ] },
+    ];
+}
+async function postWorkflowApprovalCard(job, application, template, text) {
+    const result = await workflowSlack.chat.postMessage({
+        channel: config.SLACK_APPROVAL_CHANNEL_ID,
+        text: `参加前注意事項 承認待ち: ${application.student_name ?? application.line_user_id ?? application.application_id}`,
+        blocks: workflowApprovalBlocks(job, application, template, text),
+    });
+    if (!result.ok || !result.ts || !result.channel)
+        throw new Error(`Slack workflow approval failed: ${result.error}`);
+    await markJob(job.id, {
+        status: 'approval_pending',
+        template_version: template.version,
+        rendered_text: text,
+        approval_slack_channel_id: result.channel,
+        approval_slack_message_ts: result.ts,
+        error_message: null,
+    });
+    return result;
+}
+export async function getWorkflowApprovalDraft(jobId) {
+    const { data, error } = await supabase
+        .from('workflow_jobs')
+        .select('*, referral_applications(*, students(id,line_user_id,display_name,bank_form_sent_at,bank_form_answered_at))')
+        .eq('client_id', config.DEFAULT_CLIENT_ID)
+        .eq('id', jobId)
+        .single();
+    if (error)
+        throw error;
+    const job = data;
+    const application = job.referral_applications;
+    if (!application)
+        throw new Error('Missing referral application for workflow job');
+    const template = await getWorkflowTemplate(job.template_key);
+    const text = job.approved_text ?? job.rendered_text ?? renderWorkflowTemplate(template.body, { ...templateValues(application), ...(job.metadata ?? {}) });
+    return { job, application, template, text };
+}
+export async function approveWorkflowJob(input) {
+    const { job, application, template, text: currentText } = await getWorkflowApprovalDraft(input.jobId);
+    const text = input.text ?? currentText;
+    const dryRun = input.dryRun ?? config.LINE_SEND_DRY_RUN;
+    if (!application.line_user_id)
+        throw new Error(`Missing LINE user id for application ${application.application_id}`);
+    await markJob(job.id, {
+        status: dryRun ? 'approval_dry_run' : 'processing',
+        approved_by_slack_user_id: input.userId,
+        approved_at: nowIso(),
+        approved_text: text,
+        template_version: template.version,
+        attempts: Number(job.attempts ?? 0) + 1,
+    });
+    if (dryRun) {
+        await sendWorkflowMessage(application, text, job.job_type, true, { key: template.key, version: template.version }, input.userId);
+        return { ok: true, dryRun: true, job, application, template, text };
+    }
+    try {
+        await sendWorkflowMessage(application, text, job.job_type, false, { key: template.key, version: template.version }, input.userId);
+        const { status, patch } = statusPatchForJob(job);
+        if (status)
+            await setApplicationStatus(application, status, patch);
+        await markJob(job.id, { status: 'sent', sent_at: nowIso(), error_message: null });
+        await writeApplicationsToSheets({ applicationIds: [application.id], dryRun: config.SHEETS_WRITE_DRY_RUN });
+        return { ok: true, dryRun: false, job, application, template, text };
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await markJob(job.id, { status: 'failed', error_message: message });
+        throw err;
+    }
+}
 export async function runWorkflowTick(input = {}) {
     const jobs = await dueJobs(input.limit ?? 20);
     const dryRun = input.dryRun ?? config.LINE_SEND_DRY_RUN;
@@ -362,21 +561,38 @@ export async function runWorkflowTick(input = {}) {
             continue;
         }
         const values = { ...templateValues(application), ...(job.metadata ?? {}) };
-        const template = await getTemplateBody(job.template_key);
-        const text = renderWorkflowTemplate(template, values);
+        const template = await getWorkflowTemplate(job.template_key);
+        const text = renderWorkflowTemplate(template.body, values);
         if (dryRun) {
-            results.push({ id: job.id, ok: true, dryRun: true, applicationId: application.application_id, jobType: job.job_type, text });
+            results.push({ id: job.id, ok: true, dryRun: true, applicationId: application.application_id, jobType: job.job_type, templateKey: template.key, templateVersion: template.version, sendMode: template.sendMode, text });
+            continue;
+        }
+        if (template.sendMode === 'disabled') {
+            await markJob(job.id, { status: 'skipped', error_message: 'Template send_mode is disabled', template_version: template.version, rendered_text: text });
+            results.push({ id: job.id, ok: true, skipped: true, applicationId: application.application_id, jobType: job.job_type, templateKey: template.key });
+            continue;
+        }
+        if (template.sendMode === 'approval_required') {
+            try {
+                const approval = await postWorkflowApprovalCard(job, application, template, text);
+                results.push({ id: job.id, ok: true, approvalRequired: true, slackTs: approval.ts, applicationId: application.application_id, jobType: job.job_type, templateKey: template.key, templateVersion: template.version });
+            }
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                await markJob(job.id, { status: 'failed', error_message: message, template_version: template.version, rendered_text: text });
+                results.push({ id: job.id, ok: false, applicationId: application.application_id, error: message });
+            }
             continue;
         }
         await markJob(job.id, { status: 'processing', locked_at: nowIso(), attempts: Number(job.attempts ?? 0) + 1 });
         try {
-            await sendWorkflowMessage(application, text, job.job_type, false);
+            await sendWorkflowMessage(application, text, job.job_type, false, { key: template.key, version: template.version });
             const { status, patch } = statusPatchForJob(job);
             if (status)
                 await setApplicationStatus(application, status, patch);
-            await markJob(job.id, { status: 'sent', sent_at: nowIso(), error_message: null });
+            await markJob(job.id, { status: 'sent', sent_at: nowIso(), error_message: null, template_version: template.version, rendered_text: text });
             await writeApplicationsToSheets({ applicationIds: [application.id], dryRun: config.SHEETS_WRITE_DRY_RUN });
-            results.push({ id: job.id, ok: true, dryRun: false, applicationId: application.application_id, jobType: job.job_type });
+            results.push({ id: job.id, ok: true, dryRun: false, applicationId: application.application_id, jobType: job.job_type, templateKey: template.key, templateVersion: template.version });
         }
         catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -393,8 +609,9 @@ async function maybeSendBankForm(application, dryRun) {
         return { alreadyAnswered: true };
     if (registration?.bank_form_sent_at || student?.bank_form_sent_at)
         return { alreadySent: true };
-    const text = renderWorkflowTemplate(await getTemplateBody('bank_account_form'), templateValues(application));
-    await sendWorkflowMessage(application, text, 'bank_account_form', dryRun);
+    const template = await getWorkflowTemplate('bank_account_form');
+    const text = renderWorkflowTemplate(template.body, templateValues(application));
+    await sendWorkflowMessage(application, text, 'bank_account_form', dryRun, { key: template.key, version: template.version });
     if (!dryRun) {
         const sentAt = nowIso();
         await supabase.from('students').update({ bank_form_sent_at: sentAt, updated_at: sentAt }).eq('id', application.student_id);
@@ -408,15 +625,17 @@ export async function processWorkflowReplyForApplication(input) {
     const application = input.application;
     const sentTexts = [];
     if (input.intent === 'confirmation') {
-        const text = await getTemplateBody('confirmation_ack');
-        await sendWorkflowMessage(application, text, 'confirmation_ack', dryRun);
+        const template = await getWorkflowTemplate('confirm_ack_reply');
+        const text = renderWorkflowTemplate(template.body, templateValues(application));
+        await sendWorkflowMessage(application, text, 'confirm_ack_reply', dryRun, { key: template.key, version: template.version });
         sentTexts.push(text);
         if (!dryRun)
             await setApplicationStatus(application, 'pre_caution_confirmed', { pre_caution_confirmed_at: nowIso(), last_line_sent_at: nowIso() });
     }
     if (input.intent === 'form_answered') {
-        const text = await getTemplateBody('form_answered_ack');
-        await sendWorkflowMessage(application, text, 'form_answered_ack', dryRun);
+        const template = await getWorkflowTemplate('answered_ack_reply');
+        const text = renderWorkflowTemplate(template.body, templateValues(application));
+        await sendWorkflowMessage(application, text, 'answered_ack_reply', dryRun, { key: template.key, version: template.version });
         sentTexts.push(text);
         const registration = await getRegistrationState(application.student_id);
         const bankFormAlreadySent = application.bank_form_sent_at || application.students?.bank_form_sent_at || registration?.bank_form_sent_at;

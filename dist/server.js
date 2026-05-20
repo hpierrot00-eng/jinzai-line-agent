@@ -1,7 +1,7 @@
 import express from 'express';
 import { config } from './config.js';
 import { generateDraft } from './ai.js';
-import { createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
+import { approveMessageTemplate, createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
 import { extractLineEvents, findLineDisplayName, verifyLineSignature } from './line.js';
 import { handleSlackInteraction, postApprovalMessage, postFormResponseMatchNotification, postLineIdentityNotification, postWorkflowNotification, verifySlackSignature } from './slack.js';
 import { rebuildWorkflowJobs, runWorkflowTick, processWorkflowReply, WORKFLOW_STATUSES } from './workflow.js';
@@ -167,6 +167,17 @@ app.post('/message-templates', async (req, res, next) => {
             return;
         const template = await upsertMessageTemplate(req.body);
         res.status(201).json({ ok: true, template });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+app.post('/message-templates/:key/approve', async (req, res, next) => {
+    try {
+        if (!requireAdmin(req, res))
+            return;
+        const template = await approveMessageTemplate(req.params.key, req.body ?? {});
+        res.json({ ok: true, template });
     }
     catch (err) {
         next(err);

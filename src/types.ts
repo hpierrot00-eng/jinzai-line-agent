@@ -42,8 +42,13 @@ export type MessageTemplate = {
   title: string;
   category: string;
   body: string;
+  version?: number;
   priority: number;
   status: string;
+  send_mode?: 'auto_send' | 'approval_required' | 'disabled';
+  updated_by?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
 };
 
 export type DraftContext = {

@@ -108,8 +108,23 @@ create table if not exists workflow_jobs (
 
 alter table workflow_jobs add column if not exists application_id uuid references referral_applications(id) on delete cascade;
 alter table workflow_jobs alter column student_id drop not null;
+alter table workflow_jobs add column if not exists template_version integer;
+alter table workflow_jobs add column if not exists rendered_text text;
+alter table workflow_jobs add column if not exists approved_text text;
+alter table workflow_jobs add column if not exists approval_slack_channel_id text;
+alter table workflow_jobs add column if not exists approval_slack_message_ts text;
+alter table workflow_jobs add column if not exists approved_by_slack_user_id text;
+alter table workflow_jobs add column if not exists approved_at timestamptz;
 
 alter table delivery_attempts add column if not exists application_id uuid references referral_applications(id) on delete set null;
+alter table delivery_attempts add column if not exists template_key text;
+alter table delivery_attempts add column if not exists template_version integer;
+
+alter table message_templates add column if not exists version integer not null default 1;
+alter table message_templates add column if not exists send_mode text not null default 'approval_required';
+alter table message_templates add column if not exists updated_by text;
+alter table message_templates add column if not exists approved_by text;
+alter table message_templates add column if not exists approved_at timestamptz;
 
 create index if not exists idx_referral_applications_student on referral_applications(student_id, updated_at desc);
 create index if not exists idx_referral_applications_line_user on referral_applications(client_id, line_user_id, updated_at desc);
@@ -121,18 +136,22 @@ create index if not exists idx_workflow_jobs_application on workflow_jobs(applic
 create index if not exists idx_workflow_jobs_student on workflow_jobs(student_id, created_at desc);
 create index if not exists idx_delivery_attempts_application_created on delivery_attempts(application_id, created_at desc);
 
-insert into message_templates (client_id, key, title, category, body, priority)
+insert into message_templates (client_id, key, title, category, body, priority, send_mode, version, approved_by, approved_at)
 values
-  ('00000000-0000-0000-0000-000000000001', 'confirmation_ack', '確認しました自動返信', 'workflow', 'ご確認ありがとうございます。当日はよろしくお願いいたします。', 220),
-  ('00000000-0000-0000-0000-000000000001', 'form_answered_ack', '回答しました自動返信', 'workflow', 'ご回答ありがとうございます。内容を確認いたします。', 215),
-  ('00000000-0000-0000-0000-000000000001', 'pre_participation_caution', '参加前注意事項', 'workflow', 'ご参加前の注意事項をお送りします。\n\n{{caution_text}}\n\n確認できましたら「確認しました」とご返信ください。', 210),
-  ('00000000-0000-0000-0000-000000000001', 'same_day_participation_reminder', '参加当日リマインド', 'workflow', '本日、{{agent_name}}のご参加予定日です。開始時間は{{participation_time}}です。忘れずにご参加ください。', 170),
-  ('00000000-0000-0000-0000-000000000001', 'post_participation_form', '参加後確認フォーム送信', 'workflow', 'ご参加ありがとうございました。参加確認のため、以下のフォームにご回答をお願いいたします。\n{{post_participation_form_url}}', 160),
-  ('00000000-0000-0000-0000-000000000001', 'bank_account_form', 'TS/銀行口座フォーム送信', 'workflow', 'ご回答ありがとうございます。謝礼金のお支払いに必要な情報入力をお願いいたします。\n{{bank_account_form_url}}', 150)
+  ('00000000-0000-0000-0000-000000000001', 'confirm_ack_reply', '確認しました自動返信', 'workflow', 'ご確認ありがとうございます！\nまた、わからない事などありましたら気軽に仰ってください！\n\n引き続きよろしくお願い致します！', 220, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'answered_ack_reply', '回答しました自動返信', 'workflow', 'ご回答ありがとうございます！\n\n引き続きよろしくお願い致します！', 215, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'pre_participation_caution', '参加前注意事項', 'workflow', '面談のお時間が近づいてきましたね！\n面談参加にあたっての注意事項だけ共有しておきます！\n※面談参加中、参加後について\n\n- オンライン面談は画面オン、マイクオンでの参加お願いいたします！\n- 参加する姿勢\n\n姿勢としては就活に興味あるけどどうしたらいいか分からない。\n\n自分の力だけだときついから良いエージェントさんを探してる。\n\nなどのような感じで受けてもらえればと思います！\n\n- 就活が終わっていても終わりました！はNGでお願いいたします！\n\n（まだ続けてます！でお願いいたします。うまく濁してもらえれば大丈夫です）\n- 就活支援金がもらえるから参加したは絶対にNGでお願いいたします！\n- 今回どこで知ってくれたのかと聞かれた場合「就活に力を入れてる友達から紹介してもらいました！名前を聞かれたら佐藤ゆうと」とご回答ください！\n- 2回目までの面談参加。基本1回目の面談の際に次の面談の日時を再度調整されるので、そこで日時の調整をしていただいて、2回目の面談も参加していただけたらと思います！！\n3回目以降はそのまま使い続けたいなと感じられたら参加していただけたらと思います！\n\n３回目以降に関しては興味があれば出ていただければ幸いです！\n\nもし、参加したエージェントが合わなかった場合はブロックなどはせずに、キャンセルしていただいても大丈夫です！\n\n※就活支援金(2500円）について\n\n就活支援金は弊社よりお支払いいたしますので、\n面談時に就活支援金についてお話しいただく必要はございません！\n就活支援金の入金は翌々月の２０日です！\n\n（非承認になってしまった場合報酬が支払われないので、ご了承ください）\n\n上記注意事項を徹底に守っていただくことや2回目参加などして企業紹介など受けていただければ基本承認になるのでご安心ください！☺️確実に承認にしたい場合は2回目を出ていただき、企業紹介など受けてもらえると確率が圧倒的に高くなります！\n\n分からない事などありましたら気軽にご連絡ください！\n\n確認できましたら「確認できました」と送っていただけると助かります！\n\n引き続きよろしくお願いいたします！', 210, 'approval_required', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'same_day_reminder', '参加当日リマインド', 'workflow', '参加当日になりました！再度、注意事項なども確認してご参加いただければと思います！\n引き続きよろしくお願いいたします！', 170, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'post_participation_form', '参加後確認フォーム送信', 'workflow', '面談ご参加お疲れ様です！\n\n我々としても参加された方にはできる限り就活支援金をお渡ししたいので、以下の回答フォームへのご入力をお願いいたします！\nhttps://docs.google.com/forms/d/e/1FAIpQLScLAZZZsnpU1jl_g6sB862tBWS2YUAQRNYSoZfHO2qR9RQVrg/viewform\n\nお手数ですが、よろしくお願いいたします！', 160, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'bank_account_form', 'TS/銀行口座フォーム送信', 'workflow', 'この度は面談ご参加ありがとうございます！\n就活支援金のお渡しは銀行振り込みで対応させて頂きます！\n\n下記のフォームのご回答よろしくお願いいたします！\n入金は翌々月の20日になります！\n\nhttps://docs.google.com/forms/d/e/1FAIpQLSd8lxdv0KGsyuK_KRpP0aRst2b-IrMh4vfmAT-IFAEf_d0H0g/viewform?usp=header', 150, 'auto_send', 1, 'seed', now())
 on conflict (client_id, key) do update set
   title = excluded.title,
   category = excluded.category,
   body = excluded.body,
+  version = greatest(message_templates.version, excluded.version),
   priority = excluded.priority,
   status = 'active',
+  send_mode = excluded.send_mode,
+  approved_by = coalesce(message_templates.approved_by, excluded.approved_by),
+  approved_at = coalesce(message_templates.approved_at, excluded.approved_at),
   updated_at = now();

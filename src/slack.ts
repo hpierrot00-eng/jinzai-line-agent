@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { generateRevisionDraft } from './ai.js';
 import { findRelevantKnowledge, getDraftWithContext, getMonthlyRulesForReply, getRecentMessages, markDraftSendFailed, recordApprovalAction, recordDeliveryAttempt, recordOutgoingAndApproval, saveDraft, saveSlackReview, supabase } from './db.js';
 import { sendLineMessage } from './line.js';
-import { selectWorkflowApplication, type WorkflowIntent } from './workflow.js';
+import { approveWorkflowJob, getWorkflowApprovalDraft, selectWorkflowApplication, type WorkflowIntent } from './workflow.js';
 import { confirmLineIdentityLink } from './sheets.js';
 import type { InboundLineMessage } from './types.js';
 
@@ -102,7 +102,7 @@ function workflowSelectionValue(application: any, intent: WorkflowIntent, eventT
   });
 }
 
-function workflowSentText(sentTexts: string[]) {
+function workflowSentText(sentTexts: unknown[]) {
   if (sentTexts.length === 0) return '送信文なし';
   return sentTexts.map((text, index) => `${index + 1}. ${truncateText(text, 500)}`).join('\n');
 }
@@ -363,6 +363,52 @@ export async function handleSlackInteraction(payload: any) {
     return;
   }
 
+  if (actionId === 'workflow_approve_send') {
+    const jobId = action.value;
+    try {
+      const result = await approveWorkflowJob({ jobId, userId });
+      await slack.chat.update({
+        channel: payload.channel.id,
+        ts: payload.message.ts,
+        text: result.dryRun ? 'ワークフローdry-run済み' : 'ワークフロー送信済み',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `${result.dryRun ? '🧪 dry-runとして記録しました' : '✅ 参加前注意事項をLINE送信しました'}\n*template:*\n${result.template.key} v${result.template.version}\n*送信文:*\n${truncateText(result.text, 2800)}` } }],
+      });
+    } catch (err) {
+      await slack.chat.update({
+        channel: payload.channel.id,
+        ts: payload.message.ts,
+        text: 'ワークフロー送信失敗',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `⚠️ LINE送信に失敗しました\n*理由:*\n${errorMessage(err)}` } }],
+      });
+    }
+    return;
+  }
+
+  if (actionId === 'workflow_edit_send') {
+    const jobId = action.value;
+    const draft = await getWorkflowApprovalDraft(jobId);
+    await slack.views.open({
+      trigger_id: payload.trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'workflow_edit_send_modal',
+        private_metadata: JSON.stringify({ jobId, channel: payload.channel.id, ts: payload.message.ts }),
+        title: { type: 'plain_text', text: '編集して送信' },
+        submit: { type: 'plain_text', text: 'LINE送信' },
+        close: { type: 'plain_text', text: 'キャンセル' },
+        blocks: [{ type: 'input', block_id: 'text_block', label: { type: 'plain_text', text: '送信文' }, element: { type: 'plain_text_input', action_id: 'text', multiline: true, initial_value: draft.text } }],
+      },
+    });
+    return;
+  }
+
+  if (actionId === 'workflow_escalate') {
+    const jobId = action.value;
+    await supabase.from('workflow_jobs').update({ status: 'escalated', error_message: 'Escalated from Slack', updated_at: new Date().toISOString() }).eq('id', jobId);
+    await slack.chat.update({ channel: payload.channel.id, ts: payload.message.ts, text: '人間対応', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '👤 このワークフロー送信を人間対応に切り替えました' } }] });
+    return;
+  }
+
   if (!replyDraftId) return;
 
   if (actionId === 'approve_send' || actionId === 'retry_send') {
@@ -423,6 +469,25 @@ async function handleModalSubmission(payload: any) {
       await slack.chat.update({ channel: meta.channel, ts: meta.ts, text: '編集送信済み', blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `✅ 編集後の文面をLINE送信しました${warning}\n*送信文:*\n${text}` } }] });
     } else {
       await slack.chat.update({ channel: meta.channel, ts: meta.ts, text: 'LINE送信失敗', blocks: retryBlocks(meta.replyDraftId, text, result.error) });
+    }
+  }
+  if (payload.view.callback_id === 'workflow_edit_send_modal') {
+    const text = payload.view.state.values.text_block.text.value;
+    try {
+      const result = await approveWorkflowJob({ jobId: meta.jobId, userId, text });
+      await slack.chat.update({
+        channel: meta.channel,
+        ts: meta.ts,
+        text: result.dryRun ? '編集dry-run済み' : '編集送信済み',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `${result.dryRun ? '🧪 編集後の文面をdry-runとして記録しました' : '✅ 編集後の参加前注意事項をLINE送信しました'}\n*template:*\n${result.template.key} v${result.template.version}\n*送信文:*\n${truncateText(text, 2800)}` } }],
+      });
+    } catch (err) {
+      await slack.chat.update({
+        channel: meta.channel,
+        ts: meta.ts,
+        text: 'ワークフロー送信失敗',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `⚠️ LINE送信に失敗しました\n*理由:*\n${errorMessage(err)}\n\n送信文は未送信です。` } }],
+      });
     }
   }
   if (payload.view.callback_id === 'revision_modal') {

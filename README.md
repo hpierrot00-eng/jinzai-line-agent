@@ -21,7 +21,7 @@ Slack承認型のLINE学生対応AI MVPです。
 - Application-based workflow automation for same-day reminders, post-participation forms, and TS/bank-account forms
 - Google Sheets sync/writeback for the operator ledger, with configurable column names and dry-run mode
 - First LINE replies can auto-link `lineUserId` to Sheets rows by matching student name, furigana, or LINE display name
-- Low-risk `確認しました` / `回答しました` replies can be auto-processed while ambiguous or risky replies still go to Slack for human confirmation
+- Low-risk `確認しました` / `確認できました` / `回答しました` replies can be auto-processed while ambiguous or risky replies still go to Slack for human confirmation
 - Optional LINE Harness tag mirroring for operator visibility; Supabase remains the source of truth
 
 ## Flow
@@ -35,7 +35,7 @@ Draft generation uses, in this order:
 3. matching `knowledge_items`
 4. matching `monthly_rules` for “今月” / “来月” / explicit month questions
 
-General inquiries stay Slack approval-first. Workflow replies that clearly match `確認しました` or `回答しました` are treated as low risk and can be auto-sent; use `LINE_SEND_DRY_RUN=true` while testing.
+General inquiries stay Slack approval-first. Workflow replies that clearly match `確認しました`, `確認できました`, or `回答しました` are treated as low risk and can be auto-sent; use `LINE_SEND_DRY_RUN=true` while testing.
 
 ## Setup
 
@@ -65,18 +65,21 @@ Optional:
 - `ADMIN_API_KEY`
 - `LINE_HARNESS_TAG_SYNC_ENABLED` / `LINE_HARNESS_TAG_SYNC_URL` for optional LINE Harness tag mirroring
 - `LINE_SEND_DRY_RUN=true` to record planned LINE sends without sending
-- `GOOGLE_SHEETS_SPREADSHEET_ID`
-- `GOOGLE_SHEETS_TAB_NAME`
+- `CUSTOMER_SHEET_SPREADSHEET_ID=1-f4cXz1hdN0GCljxgXP88dQpAzYlsGa27TNxPWqTRKI`
+- `CUSTOMER_SHEET_TAB_NAME=顧客管理シート`
+- `GOOGLE_SHEETS_SPREADSHEET_ID` / `GOOGLE_SHEETS_TAB_NAME` as backward-compatible aliases
 - `GOOGLE_SERVICE_ACCOUNT_EMAIL`
 - `GOOGLE_PRIVATE_KEY`
 - `SHEETS_COLUMN_MAP_JSON`
 - `SHEETS_DRY_RUN=true` to preview all Sheets writes
 - `SHEETS_WRITE_DRY_RUN=true` to preview Sheets writeback without writing
-- `POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID`
-- `POST_PARTICIPATION_RESPONSES_TAB_NAME`
+- `PARTICIPATION_FORM_SPREADSHEET_ID=1z721QOp_v5TPnmebQ4H6NPj6uFPuz_iZHl0sMo8t4c0`
+- `PARTICIPATION_FORM_TAB_NAME=フォームの回答 1`
+- `POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID` / `POST_PARTICIPATION_RESPONSES_TAB_NAME` as backward-compatible aliases
 - `POST_PARTICIPATION_RESPONSE_COLUMN_MAP_JSON`
-- `BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID`
-- `BANK_ACCOUNT_RESPONSES_TAB_NAME`
+- `BANK_FORM_SPREADSHEET_ID=1OjTGevowSpSQJH70ad4m_dBjHSJs2dMOUYaMWeHmi2Q`
+- `BANK_FORM_TAB_NAME=フォームの回答 1`
+- `BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID` / `BANK_ACCOUNT_RESPONSES_TAB_NAME` as backward-compatible aliases
 - `BANK_ACCOUNT_RESPONSE_COLUMN_MAP_JSON`
 - `POST_PARTICIPATION_FORM_URL`
 - `BANK_ACCOUNT_FORM_URL`
@@ -248,7 +251,7 @@ Authorization: Bearer $ADMIN_API_KEY
 
 This creates idempotent application-level jobs:
 
-- `pre_participation_caution`: sends immediately once the application is ready
+- `pre_participation_caution`: posts a Slack approval card once the application is ready; LINE is sent only after `承認して送信` or `編集して送信`
 - `same_day_participation_reminder`: participation time minus `SAME_DAY_REMINDER_OFFSET_HOURS`
 - `post_participation_form`: participation time plus `POST_FORM_DELAY_HOURS`
 
@@ -259,7 +262,7 @@ POST /workflow/tick
 Authorization: Bearer $ADMIN_API_KEY
 ```
 
-Use `{"dryRun": true}` to render planned LINE messages without sending. A typical Render Cron can call `/workflow/tick` every 5-15 minutes.
+Use `{"dryRun": true}` to render planned LINE messages without sending. A typical Render Cron can call `/workflow/tick` every 5-15 minutes. Templates with `send_mode=approval_required` are not sent directly; `/workflow/tick` posts a Slack card and stores the rendered text, template key/version, Slack message location, and later approval metadata on the workflow job.
 
 List valid statuses:
 
@@ -268,13 +271,16 @@ GET /workflow/statuses
 Authorization: Bearer $ADMIN_API_KEY
 ```
 
-MVP templates seeded by the workflow migration:
+Workflow templates seeded by the workflow migration:
 
-- `confirmation_ack`
-- `form_answered_ack`
-- `same_day_participation_reminder`
+- `pre_participation_caution` with `send_mode=approval_required`
+- `same_day_reminder` with `send_mode=auto_send`
 - `post_participation_form`
 - `bank_account_form`
+- `confirm_ack_reply`
+- `answered_ack_reply`
+
+Template rows include `key`, `title`, `body`, `version`, `status`, `send_mode`, `updated_by`, `approved_by`, and `approved_at`. Delivery attempts store `template_key` and `template_version` so later audits can see exactly which wording was sent.
 
 ## Knowledge, monthly rules, and templates
 
@@ -296,13 +302,22 @@ curl -X POST https://YOUR_DOMAIN/monthly-rules \
   -d '{"ruleMonth":"2026-06","category":"payment","label":"2026年6月の支払い予定日","value":"6月末予定","notes":"確定前は断定しない"}'
 ```
 
-Create or update a reusable message template:
+Create or update a reusable message template. Updating creates the next template version for future sends:
 
 ```bash
 curl -X POST https://YOUR_DOMAIN/message-templates \
   -H "authorization: Bearer $ADMIN_API_KEY" \
   -H "content-type: application/json" \
-  -d '{"key":"schedule_confirm","title":"日程確認の基本返信","category":"schedule","body":"ご連絡ありがとうございます。日程について確認いたします。候補日時やご希望があれば、あわせてお送りください。","priority":80}'
+  -d '{"key":"same_day_reminder","title":"参加当日リマインド","category":"workflow","body":"参加当日になりました！再度、注意事項なども確認してご参加いただければと思います！\n引き続きよろしくお願いいたします！","priority":170,"sendMode":"auto_send","updatedBy":"operator"}'
+```
+
+Approve a template row after review:
+
+```bash
+curl -X POST https://YOUR_DOMAIN/message-templates/pre_participation_caution/approve \
+  -H "authorization: Bearer $ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"approvedBy":"operator"}'
 ```
 
 List approved-reply candidates that can be turned into knowledge:

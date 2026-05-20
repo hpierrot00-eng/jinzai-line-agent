@@ -319,7 +319,7 @@ export async function listKnowledgeCandidates(limit = 30) {
 export async function findMessageTemplates(category?: string, limit = 5): Promise<MessageTemplate[]> {
   let query = supabase
     .from('message_templates')
-    .select('id,key,title,category,body,priority,status')
+    .select('id,key,title,category,body,version,priority,status,send_mode,updated_by,approved_by,approved_at')
     .eq('client_id', config.DEFAULT_CLIENT_ID)
     .eq('status', 'active')
     .order('priority', { ascending: false })
@@ -330,6 +330,19 @@ export async function findMessageTemplates(category?: string, limit = 5): Promis
   if (error) {
     // Keep older deployments alive until the new schema migration is applied.
     if (/message_templates|relation .* does not exist/i.test(error.message ?? '')) return [];
+    if (/version|send_mode|updated_by|approved_by|approved_at|schema cache/i.test(error.message ?? '')) {
+      let legacyQuery = supabase
+        .from('message_templates')
+        .select('id,key,title,category,body,priority,status')
+        .eq('client_id', config.DEFAULT_CLIENT_ID)
+        .eq('status', 'active')
+        .order('priority', { ascending: false })
+        .limit(limit);
+      if (category) legacyQuery = legacyQuery.in('category', [category, 'general']);
+      const legacy = await legacyQuery;
+      if (legacy.error) throw legacy.error;
+      return (legacy.data ?? []) as MessageTemplate[];
+    }
     throw error;
   }
   return (data ?? []) as MessageTemplate[];
@@ -347,17 +360,56 @@ export async function listMessageTemplates(limit = 50) {
   return { ok: true, templates: data ?? [] };
 }
 
-export async function upsertMessageTemplate(input: { key: string; title: string; category?: string; body: string; priority?: number; status?: string }) {
+export async function upsertMessageTemplate(input: {
+  key: string;
+  title: string;
+  category?: string;
+  body: string;
+  priority?: number;
+  status?: string;
+  sendMode?: 'auto_send' | 'approval_required' | 'disabled';
+  send_mode?: 'auto_send' | 'approval_required' | 'disabled';
+  updatedBy?: string;
+  updated_by?: string;
+}) {
+  const existing = await supabase
+    .from('message_templates')
+    .select('version,send_mode')
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .eq('key', input.key)
+    .maybeSingle();
+  if (existing.error) throw existing.error;
+  const nextVersion = Number(existing.data?.version ?? 0) + 1;
   const { data, error } = await supabase.from('message_templates').upsert({
     client_id: config.DEFAULT_CLIENT_ID,
     key: input.key,
     title: input.title,
     category: input.category ?? 'general',
     body: input.body,
+    version: nextVersion,
     priority: input.priority ?? 0,
     status: input.status ?? 'active',
+    send_mode: input.sendMode ?? input.send_mode ?? existing.data?.send_mode ?? 'approval_required',
+    updated_by: input.updatedBy ?? input.updated_by ?? 'admin_api',
     updated_at: new Date().toISOString(),
   }, { onConflict: 'client_id,key' }).select('*').single();
+  if (error) throw error;
+  return data;
+}
+
+export async function approveMessageTemplate(key: string, input: { approvedBy?: string; approved_by?: string; status?: string }) {
+  const { data, error } = await supabase
+    .from('message_templates')
+    .update({
+      status: input.status ?? 'active',
+      approved_by: input.approvedBy ?? input.approved_by ?? 'admin_api',
+      approved_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .eq('key', key)
+    .select('*')
+    .single();
   if (error) throw error;
   return data;
 }

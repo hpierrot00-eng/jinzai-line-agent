@@ -175,6 +175,8 @@ create table if not exists delivery_attempts (
   attempted_by_slack_user_id text,
   action text not null,
   message_text text not null,
+  template_key text,
+  template_version integer,
   created_at timestamptz not null default now()
 );
 
@@ -215,12 +217,19 @@ create table if not exists workflow_jobs (
   student_id uuid references students(id) on delete cascade,
   job_type text not null,
   template_key text not null,
+  template_version integer,
   due_at timestamptz not null,
   status text not null default 'scheduled',
   attempts integer not null default 0,
   locked_at timestamptz,
   sent_at timestamptz,
   error_message text,
+  rendered_text text,
+  approved_text text,
+  approval_slack_channel_id text,
+  approval_slack_message_ts text,
+  approved_by_slack_user_id text,
+  approved_at timestamptz,
   idempotency_key text not null,
   metadata jsonb not null default '{}',
   created_at timestamptz not null default now(),
@@ -264,8 +273,13 @@ create table if not exists message_templates (
   title text not null,
   category text not null default 'general',
   body text not null,
+  version integer not null default 1,
   priority integer not null default 0,
   status text not null default 'active',
+  send_mode text not null default 'approval_required',
+  updated_by text,
+  approved_by text,
+  approved_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(client_id, key)
@@ -292,17 +306,15 @@ insert into clients (id, name, auto_reply_mode)
 values ('00000000-0000-0000-0000-000000000001', 'default', 'draft_only')
 on conflict (id) do nothing;
 
-insert into message_templates (client_id, key, title, category, body, priority)
+insert into message_templates (client_id, key, title, category, body, priority, send_mode, version, approved_by, approved_at)
 values
-  ('00000000-0000-0000-0000-000000000001', 'payment_handoff', '支払い・条件確認の担当者引き継ぎ', 'payment', 'ご連絡ありがとうございます。内容を担当者が確認し、個別にご案内いたします。正確な確認が必要な内容のため、このまま担当者対応に切り替えます。', 100),
-  ('00000000-0000-0000-0000-000000000001', 'schedule_confirm', '日程確認の基本返信', 'schedule', 'ご連絡ありがとうございます。日程について確認いたします。候補日時やご希望があれば、あわせてお送りください。', 80),
-  ('00000000-0000-0000-0000-000000000001', 'general_ack', '一般問い合わせの受付返信', 'general', 'ご連絡ありがとうございます。内容を確認いたしました。担当より確認のうえ、順次ご案内いたします。', 10),
-  ('00000000-0000-0000-0000-000000000001', 'confirmation_ack', '確認しました自動返信', 'workflow', 'ご確認ありがとうございます。当日はよろしくお願いいたします。', 220),
-  ('00000000-0000-0000-0000-000000000001', 'form_answered_ack', '回答しました自動返信', 'workflow', 'ご回答ありがとうございます。内容を確認いたします。', 215),
-  ('00000000-0000-0000-0000-000000000001', 'pre_participation_caution', '参加前注意事項', 'workflow', 'ご参加前の注意事項をお送りします。\n\n{{caution_text}}\n\n確認できましたら「確認しました」とご返信ください。', 210),
-  ('00000000-0000-0000-0000-000000000001', 'pre_caution_confirmation_reminder', '参加前確認返信リマインド', 'workflow', '先ほどお送りした参加前の注意事項について、確認できましたら「確認しました」とご返信をお願いします。', 190),
-  ('00000000-0000-0000-0000-000000000001', 'second_meeting_date_request', '2回目面談日程確認', 'workflow', '2回目の面談日程が決まりましたら、何月何日の何時からになったかこちらにご返信ください。', 180),
-  ('00000000-0000-0000-0000-000000000001', 'same_day_participation_reminder', '参加当日リマインド', 'workflow', '本日、{{agent_name}}のご参加予定日です。開始時間は{{participation_time}}です。忘れずにご参加ください。', 170),
-  ('00000000-0000-0000-0000-000000000001', 'post_participation_form', '参加後確認フォーム送信', 'workflow', 'ご参加ありがとうございました。参加確認のため、以下のフォームにご回答をお願いいたします。\n{{post_participation_form_url}}', 160),
-  ('00000000-0000-0000-0000-000000000001', 'bank_account_form', 'TS/銀行口座フォーム送信', 'workflow', 'ご回答ありがとうございます。謝礼金のお支払いに必要な情報入力をお願いいたします。\n{{bank_account_form_url}}', 150)
+  ('00000000-0000-0000-0000-000000000001', 'payment_handoff', '支払い・条件確認の担当者引き継ぎ', 'payment', 'ご連絡ありがとうございます。内容を担当者が確認し、個別にご案内いたします。正確な確認が必要な内容のため、このまま担当者対応に切り替えます。', 100, 'approval_required', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'schedule_confirm', '日程確認の基本返信', 'schedule', 'ご連絡ありがとうございます。日程について確認いたします。候補日時やご希望があれば、あわせてお送りください。', 80, 'approval_required', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'general_ack', '一般問い合わせの受付返信', 'general', 'ご連絡ありがとうございます。内容を確認いたしました。担当より確認のうえ、順次ご案内いたします。', 10, 'approval_required', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'confirm_ack_reply', '確認しました自動返信', 'workflow', 'ご確認ありがとうございます！\nまた、わからない事などありましたら気軽に仰ってください！\n\n引き続きよろしくお願い致します！', 220, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'answered_ack_reply', '回答しました自動返信', 'workflow', 'ご回答ありがとうございます！\n\n引き続きよろしくお願い致します！', 215, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'pre_participation_caution', '参加前注意事項', 'workflow', '面談のお時間が近づいてきましたね！\n面談参加にあたっての注意事項だけ共有しておきます！\n※面談参加中、参加後について\n\n- オンライン面談は画面オン、マイクオンでの参加お願いいたします！\n- 参加する姿勢\n\n姿勢としては就活に興味あるけどどうしたらいいか分からない。\n\n自分の力だけだときついから良いエージェントさんを探してる。\n\nなどのような感じで受けてもらえればと思います！\n\n- 就活が終わっていても終わりました！はNGでお願いいたします！\n\n（まだ続けてます！でお願いいたします。うまく濁してもらえれば大丈夫です）\n- 就活支援金がもらえるから参加したは絶対にNGでお願いいたします！\n- 今回どこで知ってくれたのかと聞かれた場合「就活に力を入れてる友達から紹介してもらいました！名前を聞かれたら佐藤ゆうと」とご回答ください！\n- 2回目までの面談参加。基本1回目の面談の際に次の面談の日時を再度調整されるので、そこで日時の調整をしていただいて、2回目の面談も参加していただけたらと思います！！\n3回目以降はそのまま使い続けたいなと感じられたら参加していただけたらと思います！\n\n３回目以降に関しては興味があれば出ていただければ幸いです！\n\nもし、参加したエージェントが合わなかった場合はブロックなどはせずに、キャンセルしていただいても大丈夫です！\n\n※就活支援金(2500円）について\n\n就活支援金は弊社よりお支払いいたしますので、\n面談時に就活支援金についてお話しいただく必要はございません！\n就活支援金の入金は翌々月の２０日です！\n\n（非承認になってしまった場合報酬が支払われないので、ご了承ください）\n\n上記注意事項を徹底に守っていただくことや2回目参加などして企業紹介など受けていただければ基本承認になるのでご安心ください！☺️確実に承認にしたい場合は2回目を出ていただき、企業紹介など受けてもらえると確率が圧倒的に高くなります！\n\n分からない事などありましたら気軽にご連絡ください！\n\n確認できましたら「確認できました」と送っていただけると助かります！\n\n引き続きよろしくお願いいたします！', 210, 'approval_required', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'same_day_reminder', '参加当日リマインド', 'workflow', '参加当日になりました！再度、注意事項なども確認してご参加いただければと思います！\n引き続きよろしくお願いいたします！', 170, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'post_participation_form', '参加後確認フォーム送信', 'workflow', '面談ご参加お疲れ様です！\n\n我々としても参加された方にはできる限り就活支援金をお渡ししたいので、以下の回答フォームへのご入力をお願いいたします！\nhttps://docs.google.com/forms/d/e/1FAIpQLScLAZZZsnpU1jl_g6sB862tBWS2YUAQRNYSoZfHO2qR9RQVrg/viewform\n\nお手数ですが、よろしくお願いいたします！', 160, 'auto_send', 1, 'seed', now()),
+  ('00000000-0000-0000-0000-000000000001', 'bank_account_form', 'TS/銀行口座フォーム送信', 'workflow', 'この度は面談ご参加ありがとうございます！\n就活支援金のお渡しは銀行振り込みで対応させて頂きます！\n\n下記のフォームのご回答よろしくお願いいたします！\n入金は翌々月の20日になります！\n\nhttps://docs.google.com/forms/d/e/1FAIpQLSd8lxdv0KGsyuK_KRpP0aRst2b-IrMh4vfmAT-IFAEf_d0H0g/viewform?usp=header', 150, 'auto_send', 1, 'seed', now())
 on conflict (client_id, key) do nothing;
