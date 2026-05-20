@@ -70,6 +70,7 @@ Optional:
 - `GOOGLE_SERVICE_ACCOUNT_EMAIL`
 - `GOOGLE_PRIVATE_KEY`
 - `SHEETS_COLUMN_MAP_JSON`
+- `SHEETS_DRY_RUN=true` to preview all Sheets writes
 - `SHEETS_WRITE_DRY_RUN=true` to preview Sheets writeback without writing
 - `POST_PARTICIPATION_FORM_URL`
 - `BANK_ACCOUNT_FORM_URL`
@@ -102,6 +103,7 @@ The schema includes:
 - `appointments`
 - `referral_applications`
 - `application_workflow_states`
+- `student_registration_states`
 - `student_workflow_states`
 - `workflow_jobs`
 - `knowledge_items`
@@ -137,17 +139,22 @@ Current status values:
 
 Sheets is treated as `1 row = 1 application`. Default recommended columns:
 
-- `application_id`
-- `student_id`
-- `LINEユーザーID`
-- `学生名`
+- `顧客ID`
+- `進捗状況`
+- `記入日`
+- `送客者`
+- `名前`
 - `フリガナ`
 - `LINE名`
-- `提携エージェント名`
-- `参加予定日時`
-- `現在ステータス`
-- `自動送信対象`
-- `人間対応フラグ`
+- `大学名`
+- `卒業予定年度`
+- `予約日`
+- `予約時間`
+- `集客チャネル`
+- `着座目的`
+- `案件名称`
+- `着座単価（売上）`
+- `LINEユーザーID`
 - `当日リマインド送信日時`
 - `参加確認フォーム送信日時`
 - `参加確認フォーム回答日時`
@@ -162,22 +169,26 @@ If the production sheet uses different headers, set `SHEETS_COLUMN_MAP_JSON`. On
 
 ```json
 {
-  "applicationId": "申込ID",
+  "applicationId": "顧客ID",
   "lineUserId": "LINE ID",
-  "studentName": "氏名",
+  "studentName": "名前",
   "studentFurigana": "氏名カナ",
   "lineDisplayName": "LINE表示名",
-  "participationScheduledAt": "参加日時"
+  "reservationDate": "予約日",
+  "reservationTime": "予約時間",
+  "agentName": "案件名称"
 }
 ```
 
-LINEユーザーIDは原則として手入力不要です。初回LINE受信時に `lineUserId`, `displayName`, `text` を使って Sheets の `学生名` / `フリガナ` / `LINE名` を照合します。
+The built-in defaults treat `顧客ID` as `application_id`, `進捗状況` as the current status, `予約日 + 予約時間` as the participation datetime, and `案件名称` as the agent/project name. `自動送信対象` and `人間対応フラグ` are not required; auto-send eligibility is derived from status, LINE user ID, and reservation datetime.
 
-- 一意一致: 同じ `student_id`、同じ名前、または同じLINE名の申込行すべてに `LINEユーザーID` を書き戻し、Supabaseにも同期します。
+LINEユーザーIDは原則として手入力不要です。初回LINE受信時に `lineUserId`, `displayName`, `text` を使って Sheets の `名前` / `フリガナ` / `LINE名` を照合します。
+
+- 一意一致: 同じ名前、同じフリガナ、または同じLINE名の申込行すべてに `LINEユーザーID` を書き戻し、Supabaseにも同期します。
 - 複数一致: Slackに候補一覧と `候補に紐づけ` ボタンを出します。
 - 不一致: Slackに未紐づけ通知を出します。
 
-`SHEETS_WRITE_DRY_RUN=true` の間は、Sheetsへの書き戻しはプレビュー扱いですが、通常のSheets同期やLINE受信処理の検証はできます。
+`SHEETS_DRY_RUN=true` または `SHEETS_WRITE_DRY_RUN=true` の間は、Sheetsへの書き戻しはプレビュー扱いですが、通常のSheets同期やLINE受信処理の検証はできます。
 
 Sync Sheets into Supabase:
 
@@ -206,6 +217,7 @@ Authorization: Bearer $ADMIN_API_KEY
 
 This creates idempotent application-level jobs:
 
+- `pre_participation_caution`: sends immediately once the application is ready
 - `same_day_participation_reminder`: participation time minus `SAME_DAY_REMINDER_OFFSET_HOURS`
 - `post_participation_form`: participation time plus `POST_FORM_DELAY_HOURS`
 

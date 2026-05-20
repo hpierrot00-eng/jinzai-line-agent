@@ -1,16 +1,21 @@
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { supabase, upsertStudent } from './db.js';
+import { supabase } from './db.js';
 export const DEFAULT_SHEETS_COLUMN_MAP = {
-    applicationId: 'application_id',
-    externalStudentId: 'student_id',
+    applicationId: '顧客ID',
+    externalStudentId: '',
     lineUserId: 'LINEユーザーID',
-    studentName: '学生名',
+    studentName: '名前',
     studentFurigana: 'フリガナ',
     lineDisplayName: 'LINE名',
-    agentName: '提携エージェント名',
-    participationScheduledAt: '参加予定日時',
-    currentStatus: '現在ステータス',
+    universityName: '大学名',
+    graduationYear: '卒業予定年度',
+    agentName: '案件名称',
+    participationPurpose: '着座目的',
+    reservationDate: '予約日',
+    reservationTime: '予約時間',
+    participationScheduledAt: '',
+    currentStatus: '進捗状況',
     autoSendEnabled: '自動送信対象',
     humanRequired: '人間対応フラグ',
     sameDayReminderSentAt: '当日リマインド送信日時',
@@ -41,6 +46,9 @@ function textValue(row, map, key) {
     const raw = value(row, map, key);
     const text = raw === undefined || raw === null ? '' : String(raw).trim();
     return text || null;
+}
+function effectiveSheetsDryRun(inputDryRun) {
+    return Boolean(inputDryRun || config.SHEETS_DRY_RUN || config.SHEETS_WRITE_DRY_RUN);
 }
 function fallbackTextValue(row, map, key, fallbacks) {
     const mapped = textValue(row, map, key);
@@ -107,7 +115,55 @@ function zonedDateTimeToUtcIso(input) {
     return new Date(utcGuess - offset).toISOString();
 }
 function applicationStatus(raw) {
-    return raw || 'interested';
+    if (!raw)
+        return 'interested';
+    const normalized = raw.normalize('NFKC').replace(/\s+/g, '');
+    const known = [
+        'interested',
+        'schedule_pending',
+        'application_info_collecting',
+        'pre_caution_sent',
+        'pre_caution_confirmation_waiting',
+        'pre_caution_confirmed',
+        'same_day_reminder_pending',
+        'same_day_reminder_sent',
+        'post_participation_form_waiting',
+        'bank_form_send_pending',
+        'bank_account_waiting',
+        'payment_ready',
+        'human_required',
+    ];
+    if (known.includes(raw))
+        return raw;
+    if (/要対応|人間|例外|確認必要/.test(normalized))
+        return 'human_required';
+    if (/支払|支払い|入金準備|精算/.test(normalized))
+        return 'payment_ready';
+    if (/口座|銀行|TS|登録/.test(normalized))
+        return 'bank_account_waiting';
+    if (/参加確認|参加後|フォーム/.test(normalized))
+        return 'post_participation_form_waiting';
+    if (/当日|リマインド/.test(normalized))
+        return 'same_day_reminder_pending';
+    if (/注意事項.*確認済|確認済/.test(normalized))
+        return 'pre_caution_confirmed';
+    if (/注意事項|事前案内/.test(normalized))
+        return 'pre_caution_confirmation_waiting';
+    if (/予約|日程|確定|予定/.test(normalized))
+        return 'schedule_pending';
+    if (/情報|回収|申込/.test(normalized))
+        return 'application_info_collecting';
+    return 'interested';
+}
+function participationDateTime(row, map) {
+    const direct = textValue(row, map, 'participationScheduledAt');
+    if (direct)
+        return parseDateTime(direct);
+    const date = textValue(row, map, 'reservationDate');
+    const time = textValue(row, map, 'reservationTime');
+    if (!date && !time)
+        return null;
+    return parseDateTime(`${date ?? ''} ${time ?? '00:00'}`.trim());
 }
 function rowsFromValues(values) {
     const [headerRow, ...bodyRows] = values;
@@ -233,6 +289,8 @@ async function headerIndexes(map) {
     const headers = (json.values?.[0] ?? []).map((header) => String(header ?? '').trim());
     const indexes = new Map();
     Object.values(map).forEach((header) => {
+        if (!header)
+            return;
         const index = headers.indexOf(header);
         if (index >= 0)
             indexes.set(header, index);
@@ -248,8 +306,13 @@ function normalizeRow(row, map) {
         studentName: fallbackTextValue(row, map, 'studentName', ['名前', '氏名']),
         studentFurigana: fallbackTextValue(row, map, 'studentFurigana', ['ふりがな', 'カナ']),
         lineDisplayName: fallbackTextValue(row, map, 'lineDisplayName', ['LINE表示名', 'ライン名']),
+        universityName: textValue(row, map, 'universityName'),
+        graduationYear: textValue(row, map, 'graduationYear'),
         agentName: textValue(row, map, 'agentName'),
-        participationScheduledAt: parseDateTime(textValue(row, map, 'participationScheduledAt')),
+        participationPurpose: textValue(row, map, 'participationPurpose'),
+        reservationDate: textValue(row, map, 'reservationDate'),
+        reservationTime: textValue(row, map, 'reservationTime'),
+        participationScheduledAt: participationDateTime(row, map),
         currentStatus: applicationStatus(textValue(row, map, 'currentStatus')),
         autoSendEnabled: boolValue(row, map, 'autoSendEnabled', true),
         humanRequired: boolValue(row, map, 'humanRequired', false),
@@ -361,7 +424,7 @@ async function writeLineUserIdToRows(input) {
     const rowNumbers = [...new Set(input.rows.map((row) => Number(row.rowNumber)).filter((rowNumber) => Number.isFinite(rowNumber)))];
     if (rowNumbers.length === 0)
         return { ok: true, dryRun: true, updatedCells: 0, rowNumbers };
-    if (input.dryRun || config.SHEETS_WRITE_DRY_RUN || !config.GOOGLE_SHEETS_SPREADSHEET_ID) {
+    if (effectiveSheetsDryRun(input.dryRun) || !config.GOOGLE_SHEETS_SPREADSHEET_ID) {
         return { ok: true, dryRun: true, updatedCells: 0, rowNumbers };
     }
     const indexes = await headerIndexes(map);
@@ -452,6 +515,86 @@ export async function confirmLineIdentityLink(input) {
     ]);
     return { ok: true, status: 'linked', candidate, linkedRows: rows.length, sheetWrite, supabaseSync };
 }
+async function findExistingSheetStudent(row) {
+    if (row.lineUserId) {
+        const { data, error } = await supabase
+            .from('students')
+            .select('*')
+            .eq('client_id', config.DEFAULT_CLIENT_ID)
+            .eq('line_user_id', row.lineUserId)
+            .maybeSingle();
+        if (error)
+            throw error;
+        if (data)
+            return data;
+    }
+    if (row.externalStudentId) {
+        const { data, error } = await supabase
+            .from('students')
+            .select('*')
+            .eq('client_id', config.DEFAULT_CLIENT_ID)
+            .eq('external_student_id', row.externalStudentId)
+            .maybeSingle();
+        if (error)
+            throw error;
+        if (data)
+            return data;
+    }
+    if (row.studentName) {
+        let query = supabase
+            .from('students')
+            .select('*')
+            .eq('client_id', config.DEFAULT_CLIENT_ID)
+            .eq('name', row.studentName)
+            .limit(1);
+        if (row.studentFurigana)
+            query = query.eq('furigana', row.studentFurigana);
+        const { data, error } = await query.maybeSingle();
+        if (error)
+            throw error;
+        if (data)
+            return data;
+    }
+    return null;
+}
+async function upsertStudentFromSheet(row) {
+    const now = nowIso();
+    const existing = await findExistingSheetStudent(row);
+    const patch = {
+        client_id: config.DEFAULT_CLIENT_ID,
+        updated_at: now,
+    };
+    if (row.lineUserId)
+        patch.line_user_id = row.lineUserId;
+    if (row.externalStudentId)
+        patch.external_student_id = row.externalStudentId;
+    if (row.studentName) {
+        patch.name = row.studentName;
+        patch.display_name = row.lineDisplayName ?? row.studentName;
+    }
+    if (row.studentFurigana)
+        patch.furigana = row.studentFurigana;
+    if (row.lineDisplayName)
+        patch.line_display_name = row.lineDisplayName;
+    if (row.universityName)
+        patch.school_name = row.universityName;
+    if (row.graduationYear)
+        patch.graduation_year = row.graduationYear;
+    if (existing) {
+        const { data, error } = await supabase.from('students').update(patch).eq('id', existing.id).select('*').single();
+        if (error)
+            throw error;
+        return data;
+    }
+    const { data, error } = await supabase.from('students').insert({
+        ...patch,
+        line_user_id: row.lineUserId ?? null,
+        created_at: now,
+    }).select('*').single();
+    if (error)
+        throw error;
+    return data;
+}
 export async function syncSheetsToSupabase(input = {}) {
     const map = sheetsColumnMap();
     const sourceRows = input.rows ?? await readSheetRows();
@@ -462,41 +605,27 @@ export async function syncSheetsToSupabase(input = {}) {
             results.push({ ok: false, skipped: true, rowNumber: row.rowNumber, error: 'Missing application_id' });
             continue;
         }
-        if (!row.lineUserId) {
-            results.push({ ok: false, skipped: true, applicationId: row.applicationId, rowNumber: row.rowNumber, error: 'Missing LINE user id' });
-            continue;
-        }
         if (input.dryRun) {
-            results.push({ ok: true, dryRun: true, applicationId: row.applicationId, rowNumber: row.rowNumber });
+            results.push({ ok: true, dryRun: true, applicationId: row.applicationId, rowNumber: row.rowNumber, lineUserLinked: Boolean(row.lineUserId) });
             continue;
         }
-        const inbound = {
-            lineUserId: row.lineUserId,
-            displayName: row.studentName ?? undefined,
-            text: '',
-            rawPayload: { source: 'sheets_sync', applicationId: row.applicationId },
-            messageType: 'sync',
-        };
-        const student = await upsertStudent(inbound);
-        if (row.externalStudentId) {
-            const { error } = await supabase.from('students').update({
-                external_student_id: row.externalStudentId,
-                updated_at: nowIso(),
-            }).eq('id', student.id);
-            if (error)
-                throw error;
-        }
+        const student = await upsertStudentFromSheet(row);
         const { data: application, error } = await supabase.from('referral_applications').upsert({
             client_id: config.DEFAULT_CLIENT_ID,
             application_id: row.applicationId,
             student_id: student.id,
-            external_student_id: row.externalStudentId,
-            line_user_id: row.lineUserId,
+            external_student_id: row.externalStudentId ?? student.external_student_id ?? null,
+            line_user_id: row.lineUserId ?? student.line_user_id ?? null,
             student_name: row.studentName,
+            student_furigana: row.studentFurigana,
+            line_display_name: row.lineDisplayName,
+            university_name: row.universityName,
+            graduation_year: row.graduationYear,
             agent_name: row.agentName,
+            participation_purpose: row.participationPurpose,
             participation_scheduled_at: row.participationScheduledAt,
             current_status: row.currentStatus,
-            auto_send_enabled: row.autoSendEnabled,
+            auto_send_enabled: Boolean((row.lineUserId ?? student.line_user_id) && row.participationScheduledAt && row.autoSendEnabled && !row.humanRequired),
             human_required: row.humanRequired,
             sheet_row_number: row.rowNumber,
             sheet_values: row.raw,
@@ -514,31 +643,29 @@ export async function syncSheetsToSupabase(input = {}) {
         }, { onConflict: 'client_id,application_ref_id' });
         if (stateError)
             throw stateError;
-        results.push({ ok: true, applicationId: row.applicationId, applicationRefId: application.id, studentId: student.id, rowNumber: row.rowNumber });
+        results.push({ ok: true, applicationId: row.applicationId, applicationRefId: application.id, studentId: student.id, rowNumber: row.rowNumber, lineUserLinked: Boolean(row.lineUserId ?? student.line_user_id) });
     }
     return { ok: true, dryRun: Boolean(input.dryRun), rows: results.length, results };
 }
 function applicationToSheetValues(application, map) {
     const student = application.students ?? {};
-    return {
-        [map.externalStudentId]: application.external_student_id ?? student.external_student_id ?? '',
-        [map.lineUserId]: application.line_user_id ?? student.line_user_id ?? '',
-        [map.studentName]: application.student_name ?? student.display_name ?? '',
-        [map.agentName]: application.agent_name ?? '',
-        [map.participationScheduledAt]: application.participation_scheduled_at ?? '',
-        [map.currentStatus]: application.current_status ?? '',
-        [map.autoSendEnabled]: application.auto_send_enabled ? 'TRUE' : 'FALSE',
-        [map.humanRequired]: application.human_required ? 'TRUE' : 'FALSE',
-        [map.sameDayReminderSentAt]: application.same_day_reminder_sent_at ?? '',
-        [map.postParticipationFormSentAt]: application.post_participation_form_sent_at ?? '',
-        [map.postParticipationFormAnsweredAt]: application.post_participation_form_answered_at ?? '',
-        [map.bankFormSentAt]: application.bank_form_sent_at ?? student.bank_form_sent_at ?? '',
-        [map.bankFormAnsweredAt]: application.bank_form_answered_at ?? student.bank_form_answered_at ?? '',
-        [map.lastLineSentAt]: application.last_line_sent_at ?? '',
-        [map.slackNotifiedAt]: application.slack_notified_at ?? '',
-        [map.errorMessage]: application.error_message ?? '',
-        [map.notes]: application.notes ?? '',
+    const values = {};
+    const set = (header, valueToWrite) => {
+        if (header)
+            values[header] = valueToWrite ?? '';
     };
+    set(map.lineUserId, application.line_user_id ?? student.line_user_id ?? '');
+    set(map.currentStatus, application.current_status ?? '');
+    set(map.sameDayReminderSentAt, application.same_day_reminder_sent_at ?? '');
+    set(map.postParticipationFormSentAt, application.post_participation_form_sent_at ?? '');
+    set(map.postParticipationFormAnsweredAt, application.post_participation_form_answered_at ?? '');
+    set(map.bankFormSentAt, application.bank_form_sent_at ?? student.bank_form_sent_at ?? '');
+    set(map.bankFormAnsweredAt, application.bank_form_answered_at ?? student.bank_form_answered_at ?? '');
+    set(map.lastLineSentAt, application.last_line_sent_at ?? '');
+    set(map.slackNotifiedAt, application.slack_notified_at ?? '');
+    set(map.errorMessage, application.error_message ?? '');
+    set(map.notes, application.notes ?? '');
+    return values;
 }
 export async function writeApplicationsToSheets(input = {}) {
     const map = sheetsColumnMap();
@@ -555,7 +682,7 @@ export async function writeApplicationsToSheets(input = {}) {
     if (error)
         throw error;
     const applications = data ?? [];
-    if (input.dryRun || config.SHEETS_WRITE_DRY_RUN || !config.GOOGLE_SHEETS_SPREADSHEET_ID) {
+    if (effectiveSheetsDryRun(input.dryRun) || !config.GOOGLE_SHEETS_SPREADSHEET_ID) {
         return {
             ok: true,
             dryRun: true,

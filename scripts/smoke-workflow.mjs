@@ -6,6 +6,7 @@ process.env.SLACK_SIGNING_SECRET ||= 'smoke-test-secret';
 process.env.SLACK_APPROVAL_CHANNEL_ID ||= 'C0123456789';
 process.env.LINE_CHANNEL_ACCESS_TOKEN ||= 'smoke-test-line-token';
 process.env.LINE_SEND_DRY_RUN ||= 'true';
+process.env.SHEETS_DRY_RUN ||= 'true';
 process.env.SHEETS_WRITE_DRY_RUN ||= 'true';
 process.env.POST_PARTICIPATION_FORM_URL ||= 'https://example.com/post-form';
 process.env.BANK_ACCOUNT_FORM_URL ||= 'https://example.com/bank-form';
@@ -17,15 +18,17 @@ const sheets = await import('../dist/sheets.js');
 const workflow = await import('../dist/workflow.js');
 
 const row = sheets.normalizeSheetRowForSmoke({
-  application_id: 'app-001',
-  student_id: 'student-001',
+  顧客ID: 'app-001',
   LINEユーザーID: 'Utest001',
-  学生名: 'テスト学生',
-  提携エージェント名: 'Vire',
-  参加予定日時: '2026-05-20 18:00',
-  現在ステータス: 'interested',
-  自動送信対象: 'TRUE',
-  人間対応フラグ: 'FALSE',
+  名前: 'テスト学生',
+  フリガナ: 'テストガクセイ',
+  LINE名: 'テスト学生',
+  大学名: 'テスト大学',
+  卒業予定年度: '2027',
+  案件名称: 'Vire',
+  予約日: '2026-05-20',
+  予約時間: '18:00',
+  進捗状況: 'interested',
 });
 
 if (row.applicationId !== 'app-001') throw new Error('application_id mapping failed');
@@ -36,11 +39,12 @@ if (row.humanRequired !== false) throw new Error('human flag boolean mapping fai
 
 const scheduledAt = '2026-05-20T09:00:00.000Z';
 const jobs = workflow.planWorkflowJobsForSmoke(scheduledAt, row.applicationId);
-if (jobs.length !== 2) throw new Error('workflow job planning should create two jobs');
-if (jobs[0].jobType !== 'same_day_participation_reminder') throw new Error('missing same-day reminder job');
-if (jobs[1].jobType !== 'post_participation_form') throw new Error('missing post-participation form job');
-if (jobs[0].dueAt !== '2026-05-20T07:00:00.000Z') throw new Error(`same-day dueAt mismatch: ${jobs[0].dueAt}`);
-if (jobs[1].dueAt !== '2026-05-20T11:00:00.000Z') throw new Error(`post-form dueAt mismatch: ${jobs[1].dueAt}`);
+if (jobs.length !== 3) throw new Error('workflow job planning should create three jobs');
+if (jobs[0].jobType !== 'pre_participation_caution') throw new Error('missing pre-participation caution job');
+if (jobs[1].jobType !== 'same_day_participation_reminder') throw new Error('missing same-day reminder job');
+if (jobs[2].jobType !== 'post_participation_form') throw new Error('missing post-participation form job');
+if (jobs[1].dueAt !== '2026-05-20T07:00:00.000Z') throw new Error(`same-day dueAt mismatch: ${jobs[1].dueAt}`);
+if (jobs[2].dueAt !== '2026-05-20T11:00:00.000Z') throw new Error(`post-form dueAt mismatch: ${jobs[2].dueAt}`);
 
 const confirmation = workflow.classifyWorkflowReply('確認しました');
 if (confirmation.intent !== 'confirmation' || confirmation.risk !== 'low') throw new Error('confirmation classification failed');
@@ -63,9 +67,9 @@ if (!nameCandidates.includes('山田太郎')) throw new Error('student name extr
 const identity = await sheets.findLineIdentityCandidates({
   event: { lineUserId: 'Unew001', displayName: '山田太郎', text: '山田太郎です。確認しました' },
   rows: [
-    { __rowNumber: 2, application_id: 'app-a', student_id: 's-yamada', 学生名: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
-    { __rowNumber: 3, application_id: 'app-b', student_id: 's-yamada', 学生名: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
-    { __rowNumber: 4, application_id: 'app-c', student_id: 's-sato', 学生名: '佐藤花子', フリガナ: 'サトウハナコ', LINE名: 'hanako' },
+    { __rowNumber: 2, 顧客ID: 'app-a', 名前: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
+    { __rowNumber: 3, 顧客ID: 'app-b', 名前: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
+    { __rowNumber: 4, 顧客ID: 'app-c', 名前: '佐藤花子', フリガナ: 'サトウハナコ', LINE名: 'hanako' },
   ],
 });
 if (identity.status !== 'unique') throw new Error(`identity match should be unique: ${identity.status}`);

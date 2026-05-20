@@ -4,6 +4,9 @@
 create extension if not exists pgcrypto;
 
 alter table students add column if not exists external_student_id text;
+alter table students alter column line_user_id drop not null;
+alter table students add column if not exists furigana text;
+alter table students add column if not exists line_display_name text;
 alter table students add column if not exists bank_form_sent_at timestamptz;
 alter table students add column if not exists bank_form_answered_at timestamptz;
 
@@ -15,7 +18,12 @@ create table if not exists referral_applications (
   external_student_id text,
   line_user_id text not null,
   student_name text,
+  student_furigana text,
+  line_display_name text,
+  university_name text,
+  graduation_year text,
   agent_name text,
+  participation_purpose text,
   participation_scheduled_at timestamptz,
   current_status text not null default 'interested',
   auto_send_enabled boolean not null default true,
@@ -35,6 +43,27 @@ create table if not exists referral_applications (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(client_id, application_id)
+);
+
+alter table referral_applications alter column line_user_id drop not null;
+alter table referral_applications add column if not exists student_furigana text;
+alter table referral_applications add column if not exists line_display_name text;
+alter table referral_applications add column if not exists university_name text;
+alter table referral_applications add column if not exists graduation_year text;
+alter table referral_applications add column if not exists participation_purpose text;
+
+create table if not exists student_registration_states (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references clients(id) on delete cascade,
+  student_id uuid not null references students(id) on delete cascade,
+  ts_form_sent_at timestamptz,
+  ts_form_answered_at timestamptz,
+  bank_form_sent_at timestamptz,
+  bank_form_answered_at timestamptz,
+  metadata jsonb not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(client_id, student_id)
 );
 
 create table if not exists application_workflow_states (
@@ -77,6 +106,7 @@ create index if not exists idx_referral_applications_student on referral_applica
 create index if not exists idx_referral_applications_line_user on referral_applications(client_id, line_user_id, updated_at desc);
 create index if not exists idx_referral_applications_status on referral_applications(client_id, current_status, updated_at desc);
 create index if not exists idx_application_workflow_states_status on application_workflow_states(client_id, status, updated_at desc);
+create index if not exists idx_student_registration_states_student on student_registration_states(student_id, updated_at desc);
 create index if not exists idx_workflow_jobs_due on workflow_jobs(client_id, status, due_at);
 create index if not exists idx_workflow_jobs_application on workflow_jobs(application_id, created_at desc);
 create index if not exists idx_workflow_jobs_student on workflow_jobs(student_id, created_at desc);
@@ -86,6 +116,7 @@ insert into message_templates (client_id, key, title, category, body, priority)
 values
   ('00000000-0000-0000-0000-000000000001', 'confirmation_ack', '確認しました自動返信', 'workflow', 'ご確認ありがとうございます。当日はよろしくお願いいたします。', 220),
   ('00000000-0000-0000-0000-000000000001', 'form_answered_ack', '回答しました自動返信', 'workflow', 'ご回答ありがとうございます。内容を確認いたします。', 215),
+  ('00000000-0000-0000-0000-000000000001', 'pre_participation_caution', '参加前注意事項', 'workflow', 'ご参加前の注意事項をお送りします。\n\n{{caution_text}}\n\n確認できましたら「確認しました」とご返信ください。', 210),
   ('00000000-0000-0000-0000-000000000001', 'same_day_participation_reminder', '参加当日リマインド', 'workflow', '本日、{{agent_name}}のご参加予定日です。開始時間は{{participation_time}}です。忘れずにご参加ください。', 170),
   ('00000000-0000-0000-0000-000000000001', 'post_participation_form', '参加後確認フォーム送信', 'workflow', 'ご参加ありがとうございました。参加確認のため、以下のフォームにご回答をお願いいたします。\n{{post_participation_form_url}}', 160),
   ('00000000-0000-0000-0000-000000000001', 'bank_account_form', 'TS/銀行口座フォーム送信', 'workflow', 'ご回答ありがとうございます。謝礼金のお支払いに必要な情報入力をお願いいたします。\n{{bank_account_form_url}}', 150)

@@ -26,6 +26,7 @@ export type WorkflowIntent = 'confirmation' | 'form_answered' | 'human_required'
 export const WORKFLOW_TEMPLATE_BODIES: Record<string, string> = {
   confirmation_ack: 'ご確認ありがとうございます。当日はよろしくお願いいたします。',
   form_answered_ack: 'ご回答ありがとうございます。内容を確認いたします。',
+  pre_participation_caution: 'ご参加前の注意事項をお送りします。\n\n{{caution_text}}\n\n確認できましたら「確認しました」とご返信ください。',
   same_day_participation_reminder: '本日、{{agent_name}}のご参加予定日です。開始時間は{{participation_time}}です。忘れずにご参加ください。',
   post_participation_form: 'ご参加ありがとうございました。参加確認のため、以下のフォームにご回答をお願いいたします。\n{{post_participation_form_url}}',
   bank_account_form: 'ご回答ありがとうございます。謝礼金のお支払いに必要な情報入力をお願いいたします。\n{{bank_account_form_url}}',
@@ -51,7 +52,7 @@ type ReferralApplication = {
   id: string;
   application_id: string;
   student_id: string;
-  line_user_id: string;
+  line_user_id?: string | null;
   student_name?: string | null;
   agent_name?: string | null;
   participation_scheduled_at?: string | null;
@@ -64,7 +65,7 @@ type ReferralApplication = {
   bank_form_answered_at?: string | null;
   students?: {
     id: string;
-    line_user_id: string;
+    line_user_id?: string | null;
     display_name?: string | null;
     bank_form_sent_at?: string | null;
     bank_form_answered_at?: string | null;
@@ -157,7 +158,7 @@ async function setApplicationStatus(application: ReferralApplication, status: Wo
     updated_at: nowIso(),
   }, { onConflict: 'client_id,application_ref_id' });
   if (stateError) throw stateError;
-  await syncLineHarnessTags(application.line_user_id, [STATUS_TO_TAG[status] ?? status]);
+  if (application.line_user_id) await syncLineHarnessTags(application.line_user_id, [STATUS_TO_TAG[status] ?? status]);
 }
 
 async function insertDeliveryAttempt(input: {
@@ -218,6 +219,7 @@ async function recordOutgoing(application: ReferralApplication, text: string, ac
 }
 
 async function sendWorkflowMessage(application: ReferralApplication, text: string, action: string, dryRun: boolean) {
+  if (!application.line_user_id) throw new Error(`Missing LINE user id for application ${application.application_id}`);
   if (dryRun) {
     await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'dry_run', action });
     return { dryRun: true };
@@ -233,6 +235,33 @@ async function sendWorkflowMessage(application: ReferralApplication, text: strin
     await setApplicationStatus(application, 'human_required', { error_message: message });
     throw err;
   }
+}
+
+async function getRegistrationState(studentId: string) {
+  const { data, error } = await supabase
+    .from('student_registration_states')
+    .select('*')
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .eq('student_id', studentId)
+    .maybeSingle();
+  if (!error) return data;
+  if (/student_registration_states|relation .* does not exist/i.test(error.message ?? '')) return null;
+  throw error;
+}
+
+async function upsertRegistrationState(studentId: string, patch: Record<string, unknown>) {
+  const payload = {
+    client_id: config.DEFAULT_CLIENT_ID,
+    student_id: studentId,
+    ...patch,
+    updated_at: nowIso(),
+  };
+  const { error } = await supabase
+    .from('student_registration_states')
+    .upsert(payload, { onConflict: 'client_id,student_id' });
+  if (!error) return;
+  if (/student_registration_states|relation .* does not exist/i.test(error.message ?? '')) return;
+  throw error;
 }
 
 async function candidateApplications(studentId: string, intent: WorkflowIntent) {
@@ -286,27 +315,48 @@ export async function rebuildWorkflowJobs(input: { applicationIds?: string[]; dr
   if (error) throw error;
 
   const jobs = [];
+  const missingLineUser = [];
+  const now = new Date();
   for (const application of (data ?? []) as ReferralApplication[]) {
+    if (!application.line_user_id) {
+      missingLineUser.push({ applicationId: application.application_id, applicationRefId: application.id, studentId: application.student_id });
+      continue;
+    }
     const reminderDueAt = addHours(application.participation_scheduled_at!, -config.SAME_DAY_REMINDER_OFFSET_HOURS);
     const postFormDueAt = addHours(application.participation_scheduled_at!, config.POST_FORM_DELAY_HOURS);
-    jobs.push({
-      application_id: application.id,
-      student_id: application.student_id,
-      job_type: 'same_day_participation_reminder',
-      template_key: 'same_day_participation_reminder',
-      due_at: reminderDueAt,
-      idempotency_key: `${application.id}:same_day_participation_reminder`,
-      metadata: templateValues(application),
-    });
-    jobs.push({
-      application_id: application.id,
-      student_id: application.student_id,
-      job_type: 'post_participation_form',
-      template_key: 'post_participation_form',
-      due_at: postFormDueAt,
-      idempotency_key: `${application.id}:post_participation_form`,
-      metadata: templateValues(application),
-    });
+    if (new Date(application.participation_scheduled_at!) > now && !['pre_caution_sent', 'pre_caution_confirmation_waiting', 'pre_caution_confirmed', 'same_day_reminder_sent', 'post_participation_form_waiting', 'payment_ready'].includes(application.current_status)) {
+      jobs.push({
+        application_id: application.id,
+        student_id: application.student_id,
+        job_type: 'pre_participation_caution',
+        template_key: 'pre_participation_caution',
+        due_at: nowIso(),
+        idempotency_key: `${application.id}:pre_participation_caution`,
+        metadata: templateValues(application),
+      });
+    }
+    if (new Date(reminderDueAt) > now) {
+      jobs.push({
+        application_id: application.id,
+        student_id: application.student_id,
+        job_type: 'same_day_participation_reminder',
+        template_key: 'same_day_participation_reminder',
+        due_at: reminderDueAt,
+        idempotency_key: `${application.id}:same_day_participation_reminder`,
+        metadata: templateValues(application),
+      });
+    }
+    if (new Date(postFormDueAt) > now) {
+      jobs.push({
+        application_id: application.id,
+        student_id: application.student_id,
+        job_type: 'post_participation_form',
+        template_key: 'post_participation_form',
+        due_at: postFormDueAt,
+        idempotency_key: `${application.id}:post_participation_form`,
+        metadata: templateValues(application),
+      });
+    }
   }
 
   if (!input.dryRun && jobs.length > 0) {
@@ -319,7 +369,7 @@ export async function rebuildWorkflowJobs(input: { applicationIds?: string[]; dr
     if (upsertError) throw upsertError;
   }
 
-  return { ok: true, dryRun: Boolean(input.dryRun), applications: data?.length ?? 0, jobs };
+  return { ok: true, dryRun: Boolean(input.dryRun), applications: data?.length ?? 0, missingLineUser, jobs };
 }
 
 async function dueJobs(limit: number) {
@@ -342,6 +392,9 @@ async function markJob(jobId: string, patch: Record<string, unknown>) {
 
 function statusPatchForJob(job: WorkflowJob) {
   const sentAt = nowIso();
+  if (job.job_type === 'pre_participation_caution') {
+    return { status: 'pre_caution_confirmation_waiting' as WorkflowStatus, patch: { last_line_sent_at: sentAt } };
+  }
   if (job.job_type === 'same_day_participation_reminder') {
     return { status: 'same_day_reminder_sent' as WorkflowStatus, patch: { same_day_reminder_sent_at: sentAt, last_line_sent_at: sentAt } };
   }
@@ -395,13 +448,15 @@ export async function runWorkflowTick(input: { limit?: number; dryRun?: boolean 
 
 async function maybeSendBankForm(application: ReferralApplication, dryRun: boolean) {
   const student = application.students;
-  if (student?.bank_form_answered_at) return { alreadyAnswered: true as const };
-  if (student?.bank_form_sent_at) return { alreadySent: true as const };
+  const registration = await getRegistrationState(application.student_id);
+  if (registration?.bank_form_answered_at || student?.bank_form_answered_at) return { alreadyAnswered: true as const };
+  if (registration?.bank_form_sent_at || student?.bank_form_sent_at) return { alreadySent: true as const };
   const text = renderWorkflowTemplate(await getTemplateBody('bank_account_form'), templateValues(application));
   await sendWorkflowMessage(application, text, 'bank_account_form', dryRun);
   if (!dryRun) {
     const sentAt = nowIso();
     await supabase.from('students').update({ bank_form_sent_at: sentAt, updated_at: sentAt }).eq('id', application.student_id);
+    await upsertRegistrationState(application.student_id, { bank_form_sent_at: sentAt });
     await setApplicationStatus(application, 'bank_account_waiting', { bank_form_sent_at: sentAt, last_line_sent_at: sentAt });
   }
   return { sent: true as const, text };
@@ -424,12 +479,14 @@ export async function processWorkflowReplyForApplication(input: { application: R
     await sendWorkflowMessage(application, text, 'form_answered_ack', dryRun);
     sentTexts.push(text);
 
-    const bankFormAlreadySent = application.bank_form_sent_at || application.students?.bank_form_sent_at;
-    const bankFormUnanswered = !application.bank_form_answered_at && !application.students?.bank_form_answered_at;
+    const registration = await getRegistrationState(application.student_id);
+    const bankFormAlreadySent = application.bank_form_sent_at || application.students?.bank_form_sent_at || registration?.bank_form_sent_at;
+    const bankFormUnanswered = !application.bank_form_answered_at && !application.students?.bank_form_answered_at && !registration?.bank_form_answered_at;
     if (application.post_participation_form_answered_at && bankFormAlreadySent && bankFormUnanswered) {
       if (!dryRun) {
         const answeredAt = nowIso();
         await supabase.from('students').update({ bank_form_answered_at: answeredAt, updated_at: answeredAt }).eq('id', application.student_id);
+        await upsertRegistrationState(application.student_id, { bank_form_answered_at: answeredAt });
         await setApplicationStatus(application, 'payment_ready', { bank_form_answered_at: answeredAt, last_line_sent_at: answeredAt });
       }
       if (!dryRun) await writeApplicationsToSheets({ applicationIds: [application.id], dryRun: config.SHEETS_WRITE_DRY_RUN });
@@ -484,13 +541,18 @@ export async function selectWorkflowApplication(input: { applicationRefId: strin
   return processWorkflowReplyForApplication({
     application,
     intent: input.intent,
-    event: { lineUserId: application.line_user_id, text: input.eventText, messageType: 'text' },
+    event: { lineUserId: application.line_user_id ?? '', text: input.eventText, messageType: 'text' },
     dryRun: input.dryRun,
   });
 }
 
 export function planWorkflowJobsForSmoke(participationScheduledAt: string, applicationId = 'app-smoke') {
   return [
+    {
+      applicationId,
+      jobType: 'pre_participation_caution',
+      dueAt: new Date().toISOString(),
+    },
     {
       applicationId,
       jobType: 'same_day_participation_reminder',

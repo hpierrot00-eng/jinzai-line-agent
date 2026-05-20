@@ -13,10 +13,12 @@ create table if not exists clients (
 create table if not exists students (
   id uuid primary key default gen_random_uuid(),
   client_id uuid not null references clients(id) on delete cascade,
-  line_user_id text not null,
+  line_user_id text,
   external_student_id text,
   display_name text,
   name text,
+  furigana text,
+  line_display_name text,
   school_name text,
   graduation_year text,
   academic_profile jsonb not null default '{}',
@@ -45,9 +47,14 @@ create table if not exists referral_applications (
   application_id text not null,
   student_id uuid not null references students(id) on delete cascade,
   external_student_id text,
-  line_user_id text not null,
+  line_user_id text,
   student_name text,
+  student_furigana text,
+  line_display_name text,
+  university_name text,
+  graduation_year text,
   agent_name text,
+  participation_purpose text,
   participation_scheduled_at timestamptz,
   current_status text not null default 'interested',
   auto_send_enabled boolean not null default true,
@@ -67,6 +74,20 @@ create table if not exists referral_applications (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(client_id, application_id)
+);
+
+create table if not exists student_registration_states (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references clients(id) on delete cascade,
+  student_id uuid not null references students(id) on delete cascade,
+  ts_form_sent_at timestamptz,
+  ts_form_answered_at timestamptz,
+  bank_form_sent_at timestamptz,
+  bank_form_answered_at timestamptz,
+  metadata jsonb not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(client_id, student_id)
 );
 
 create table if not exists application_workflow_states (
@@ -257,6 +278,7 @@ create index if not exists idx_referral_applications_student on referral_applica
 create index if not exists idx_referral_applications_line_user on referral_applications(client_id, line_user_id, updated_at desc);
 create index if not exists idx_referral_applications_status on referral_applications(client_id, current_status, updated_at desc);
 create index if not exists idx_application_workflow_states_status on application_workflow_states(client_id, status, updated_at desc);
+create index if not exists idx_student_registration_states_student on student_registration_states(student_id, updated_at desc);
 create index if not exists idx_student_workflow_states_status on student_workflow_states(client_id, status, updated_at desc);
 create index if not exists idx_workflow_jobs_due on workflow_jobs(client_id, status, due_at);
 create index if not exists idx_workflow_jobs_application on workflow_jobs(application_id, created_at desc);
@@ -273,7 +295,7 @@ values
   ('00000000-0000-0000-0000-000000000001', 'general_ack', '一般問い合わせの受付返信', 'general', 'ご連絡ありがとうございます。内容を確認いたしました。担当より確認のうえ、順次ご案内いたします。', 10),
   ('00000000-0000-0000-0000-000000000001', 'confirmation_ack', '確認しました自動返信', 'workflow', 'ご確認ありがとうございます。当日はよろしくお願いいたします。', 220),
   ('00000000-0000-0000-0000-000000000001', 'form_answered_ack', '回答しました自動返信', 'workflow', 'ご回答ありがとうございます。内容を確認いたします。', 215),
-  ('00000000-0000-0000-0000-000000000001', 'pre_participation_caution', '参加前注意事項テンプレ', 'workflow', 'ご参加前の注意事項をお送りします。\n\n{{caution_text}}\n\n確認できましたら「確認しました」とご返信ください。', 200),
+  ('00000000-0000-0000-0000-000000000001', 'pre_participation_caution', '参加前注意事項', 'workflow', 'ご参加前の注意事項をお送りします。\n\n{{caution_text}}\n\n確認できましたら「確認しました」とご返信ください。', 210),
   ('00000000-0000-0000-0000-000000000001', 'pre_caution_confirmation_reminder', '参加前確認返信リマインド', 'workflow', '先ほどお送りした参加前の注意事項について、確認できましたら「確認しました」とご返信をお願いします。', 190),
   ('00000000-0000-0000-0000-000000000001', 'second_meeting_date_request', '2回目面談日程確認', 'workflow', '2回目の面談日程が決まりましたら、何月何日の何時からになったかこちらにご返信ください。', 180),
   ('00000000-0000-0000-0000-000000000001', 'same_day_participation_reminder', '参加当日リマインド', 'workflow', '本日、{{agent_name}}のご参加予定日です。開始時間は{{participation_time}}です。忘れずにご参加ください。', 170),
