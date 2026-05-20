@@ -12,14 +12,16 @@ function single<T>(data: T | T[] | null): T {
 }
 
 export async function upsertStudent(input: InboundLineMessage) {
+  const payload: Record<string, unknown> = {
+    client_id: config.DEFAULT_CLIENT_ID,
+    line_user_id: input.lineUserId,
+    updated_at: new Date().toISOString(),
+  };
+  if (input.displayName) payload.display_name = input.displayName;
+
   const { data, error } = await supabase
     .from('students')
-    .upsert({
-      client_id: config.DEFAULT_CLIENT_ID,
-      line_user_id: input.lineUserId,
-      display_name: input.displayName ?? null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'client_id,line_user_id' })
+    .upsert(payload, { onConflict: 'client_id,line_user_id' })
     .select('*')
     .single();
   if (error) throw error;

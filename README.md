@@ -7,7 +7,7 @@ Slack承認型のLINE学生対応AI MVPです。
 - LINE / LINE Harness inbound webhook
 - Supabase persistence
 - OpenClaw draft generation hook, with safe local fallback
-- Slack approval UI with customer LINE name/ID, status, classification, risk, recent conversation history, and proposed reply
+- Slack approval UI with customer LINE name/ID, status, classification, risk, recent conversation history, and proposed reply; missing LINE names are enriched from LINE Harness friend data or the LINE profile API when available
 - `承認して送信` -> LINE automatic send
 - `編集して送信` -> Slack modal -> LINE send
 - `修正依頼` -> OpenClaw/fallback再ドラフト -> 新しいSlack承認カード投稿

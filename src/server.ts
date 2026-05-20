@@ -2,7 +2,7 @@ import express from 'express';
 import { config } from './config.js';
 import { generateDraft } from './ai.js';
 import { createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
-import { extractLineEvents, verifyLineSignature } from './line.js';
+import { extractLineEvents, findLineDisplayName, verifyLineSignature } from './line.js';
 import { handleSlackInteraction, postApprovalMessage, verifySlackSignature } from './slack.js';
 
 const app = express();
@@ -26,21 +26,23 @@ async function processInbound(body: any) {
   const events = extractLineEvents(body);
   const results = [];
   for (const event of events) {
-    const student = await upsertStudent(event);
+    const displayName = event.displayName ?? await findLineDisplayName(event.lineUserId) ?? undefined;
+    const eventWithProfile = { ...event, displayName };
+    const student = await upsertStudent(eventWithProfile);
     const conversation = await getOrCreateConversation(student.id);
-    const incoming = await saveIncomingMessage(event, student.id, conversation.id);
+    const incoming = await saveIncomingMessage(eventWithProfile, student.id, conversation.id);
     const history = await getRecentMessages(conversation.id);
-    const category = /支払|支払い|入金|報酬|料金|返金|契約|条件/.test(event.text)
+    const category = /支払|支払い|入金|報酬|料金|返金|契約|条件/.test(eventWithProfile.text)
       ? 'payment'
-      : /日程|予定|面談|いつ|何時|都合|空い|空き|予約|リスケ|変更/.test(event.text)
+      : /日程|予定|面談|いつ|何時|都合|空い|空き|予約|リスケ|変更/.test(eventWithProfile.text)
         ? 'schedule'
         : undefined;
     const [knowledge, monthlyRules, templates] = await Promise.all([
-      findRelevantKnowledge(event.text, category),
-      getMonthlyRulesForReply(event.text),
+      findRelevantKnowledge(eventWithProfile.text, category),
+      getMonthlyRulesForReply(eventWithProfile.text),
       findMessageTemplates(category),
     ]);
-    const draftResult = await generateDraft({ text: event.text, history, student, knowledge, monthlyRules, templates, today: new Date().toISOString() });
+    const draftResult = await generateDraft({ text: eventWithProfile.text, history, student, knowledge, monthlyRules, templates, today: new Date().toISOString() });
     const appointment = await createAppointmentIfExtracted(student.id, conversation.id, draftResult.extracted_data);
     const draft = await saveDraft(conversation.id, incoming.id, draftResult);
     const slackMessage = await postApprovalMessage(draft.id);

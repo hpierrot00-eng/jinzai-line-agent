@@ -12,13 +12,20 @@ export function verifyLineSignature(rawBody: Buffer, signature?: string) {
 
 export function extractLineEvents(body: any): InboundLineMessage[] {
   if (body?.lineUserId && body?.text) {
-    return [{ lineUserId: body.lineUserId, displayName: body.displayName, text: body.text, rawPayload: body, messageType: body.messageType ?? 'text' }];
+    return [{
+      lineUserId: body.lineUserId,
+      displayName: body.displayName ?? body.lineDisplayName ?? body.name ?? body.profile?.displayName,
+      text: body.text,
+      rawPayload: body,
+      messageType: body.messageType ?? 'text',
+    }];
   }
   const events = Array.isArray(body?.events) ? body.events : [];
   return events
     .filter((event: any) => event?.type === 'message' && event?.message?.type === 'text' && event?.source?.userId)
     .map((event: any) => ({
       lineUserId: event.source.userId,
+      displayName: event.source?.displayName ?? event.profile?.displayName,
       text: event.message.text,
       rawPayload: event,
       messageType: event.message.type,
@@ -71,6 +78,41 @@ async function resolveHarnessFriend(baseUrl: string, lineUserId: string) {
   }
 
   throw new Error(`LINE Harness friend not found for ${lineUserId}`);
+}
+
+function friendDisplayName(friend: any) {
+  return friend?.displayName ?? friend?.display_name ?? friend?.name ?? friend?.profile?.displayName ?? friend?.lineName ?? friend?.line_name ?? null;
+}
+
+export async function findLineDisplayName(lineUserId: string) {
+  if (config.LINE_HARNESS_SEND_URL) {
+    try {
+      const apiBase = lineHarnessApiBase(config.LINE_HARNESS_SEND_URL);
+      if (apiBase) {
+        const friend = await resolveHarnessFriend(apiBase, lineUserId);
+        const name = friendDisplayName(friend);
+        if (name) return String(name);
+      }
+    } catch {
+      // Profile enrichment must never block inbound handling.
+    }
+  }
+
+  if (config.LINE_CHANNEL_ACCESS_TOKEN) {
+    try {
+      const res = await fetch(`https://api.line.me/v2/bot/profile/${encodeURIComponent(lineUserId)}`, {
+        headers: { authorization: `Bearer ${config.LINE_CHANNEL_ACCESS_TOKEN}` },
+      });
+      if (res.ok) {
+        const profile = await res.json() as any;
+        if (profile?.displayName) return String(profile.displayName);
+      }
+    } catch {
+      // Ignore profile lookup failures; Slack will still show the LINE ID.
+    }
+  }
+
+  return null;
 }
 
 async function sendViaLineHarnessApi(baseUrl: string, lineUserId: string, text: string) {

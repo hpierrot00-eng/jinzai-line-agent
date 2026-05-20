@@ -9,14 +9,16 @@ function single(data) {
     return Array.isArray(data) ? data[0] : data;
 }
 export async function upsertStudent(input) {
-    const { data, error } = await supabase
-        .from('students')
-        .upsert({
+    const payload = {
         client_id: config.DEFAULT_CLIENT_ID,
         line_user_id: input.lineUserId,
-        display_name: input.displayName ?? null,
         updated_at: new Date().toISOString(),
-    }, { onConflict: 'client_id,line_user_id' })
+    };
+    if (input.displayName)
+        payload.display_name = input.displayName;
+    const { data, error } = await supabase
+        .from('students')
+        .upsert(payload, { onConflict: 'client_id,line_user_id' })
         .select('*')
         .single();
     if (error)
