@@ -32,6 +32,8 @@ create table if not exists referral_applications (
   same_day_reminder_sent_at timestamptz,
   post_participation_form_sent_at timestamptz,
   post_participation_form_answered_at timestamptz,
+  post_participation_form_response_row_number integer,
+  post_participation_form_response_values jsonb not null default '{}',
   bank_form_sent_at timestamptz,
   bank_form_answered_at timestamptz,
   last_line_sent_at timestamptz,
@@ -51,6 +53,8 @@ alter table referral_applications add column if not exists line_display_name tex
 alter table referral_applications add column if not exists university_name text;
 alter table referral_applications add column if not exists graduation_year text;
 alter table referral_applications add column if not exists participation_purpose text;
+alter table referral_applications add column if not exists post_participation_form_response_row_number integer;
+alter table referral_applications add column if not exists post_participation_form_response_values jsonb not null default '{}';
 
 create table if not exists student_registration_states (
   id uuid primary key default gen_random_uuid(),
@@ -60,11 +64,16 @@ create table if not exists student_registration_states (
   ts_form_answered_at timestamptz,
   bank_form_sent_at timestamptz,
   bank_form_answered_at timestamptz,
+  bank_form_response_row_number integer,
+  bank_form_response_values jsonb not null default '{}',
   metadata jsonb not null default '{}',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique(client_id, student_id)
 );
+
+alter table student_registration_states add column if not exists bank_form_response_row_number integer;
+alter table student_registration_states add column if not exists bank_form_response_values jsonb not null default '{}';
 
 create table if not exists application_workflow_states (
   id uuid primary key default gen_random_uuid(),

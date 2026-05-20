@@ -75,4 +75,22 @@ const identity = await sheets.findLineIdentityCandidates({
 if (identity.status !== 'unique') throw new Error(`identity match should be unique: ${identity.status}`);
 if (identity.candidates[0].applicationIds.length !== 2) throw new Error('identity match should include all same-student application rows');
 
+const postResponseMatch = sheets.matchPostParticipationResponseForSmoke(
+  { 名前: '山田太郎', フリガナ: 'ヤマダタロウ', 案件名称: 'Vire', 参加日: '2026-05-20' },
+  [
+    { id: 'app-a', application_id: 'app-a', student_name: '山田太郎', student_furigana: 'ヤマダタロウ', agent_name: 'Vire', participation_scheduled_at: '2026-05-20T09:00:00.000Z' },
+    { id: 'app-b', application_id: 'app-b', student_name: '山田太郎', student_furigana: 'ヤマダタロウ', agent_name: 'Other', participation_scheduled_at: '2026-05-20T09:00:00.000Z' },
+  ],
+);
+if (postResponseMatch.status !== 'matched' || postResponseMatch.match.application_id !== 'app-a') throw new Error('post-participation response matching failed');
+
+const bankResponseMatch = sheets.matchBankAccountResponseForSmoke(
+  { 名前: '山田太郎', フリガナ: 'ヤマダタロウ', 大学名: 'テスト大学' },
+  [
+    { id: 'student-a', name: '山田太郎', furigana: 'ヤマダタロウ', school_name: 'テスト大学' },
+    { id: 'student-b', name: '山田太郎', furigana: 'ヤマダジロウ', school_name: '別大学' },
+  ],
+);
+if (bankResponseMatch.status !== 'matched' || bankResponseMatch.match.id !== 'student-a') throw new Error('bank-account response matching failed');
+
 console.log('Workflow smoke passed');

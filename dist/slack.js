@@ -263,6 +263,42 @@ export async function postLineIdentityNotification(result, event, student) {
         throw new Error(`Slack identity notification failed: ${slackResult.error}`);
     return slackResult;
 }
+function formResponseLine(result, kind) {
+    const response = result.response ?? {};
+    const base = kind === 'post'
+        ? `${response.studentName ?? '名前なし'} / ${response.agentName ?? '案件なし'} / ${response.participationDate ?? '参加日なし'}`
+        : `${response.studentName ?? '名前なし'} / ${response.studentFurigana ?? 'フリガナなし'} / ${response.universityName ?? '大学名なし'}`;
+    const candidates = (result.candidates ?? []).slice(0, 5).map((candidate) => {
+        if (kind === 'post')
+            return `${candidate.application_id ?? candidate.id} / ${candidate.student_name ?? candidate.students?.name ?? '名前なし'} / ${candidate.agent_name ?? '案件なし'}`;
+        return `${candidate.name ?? candidate.display_name ?? candidate.id} / ${candidate.furigana ?? 'フリガナなし'} / ${candidate.school_name ?? '大学名なし'}`;
+    });
+    return `*回答:* ${base}\n*状態:* ${result.status}${result.matchRule ? ` / ${result.matchRule}` : ''}\n*候補:*\n${candidates.length ? candidates.join('\n') : 'なし'}`;
+}
+export async function postFormResponseMatchNotification(syncResult) {
+    const postIssues = (syncResult.postParticipation?.results ?? []).filter((result) => result.status === 'multiple' || result.status === 'unmatched');
+    const bankIssues = (syncResult.bankAccount?.results ?? []).filter((result) => result.status === 'multiple' || result.status === 'unmatched');
+    if (postIssues.length === 0 && bankIssues.length === 0)
+        return null;
+    const blocks = [
+        { type: 'header', text: { type: 'plain_text', text: 'フォーム回答の照合確認', emoji: true } },
+    ];
+    if (postIssues.length > 0) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*参加確認フォーム:*\n${postIssues.slice(0, 8).map((result) => formResponseLine(result, 'post')).join('\n\n')}` } });
+    }
+    if (bankIssues.length > 0) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*TS/銀行口座フォーム:*\n${bankIssues.slice(0, 8).map((result) => formResponseLine(result, 'bank')).join('\n\n')}` } });
+    }
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '一意に決まらなかった回答だけ表示しています。管理シートまたは回答内容を確認してください。' }] });
+    const result = await slack.chat.postMessage({
+        channel: config.SLACK_APPROVAL_CHANNEL_ID,
+        text: 'フォーム回答の照合確認',
+        blocks,
+    });
+    if (!result.ok)
+        throw new Error(`Slack form response notification failed: ${result.error}`);
+    return result;
+}
 export async function handleSlackInteraction(payload) {
     const action = payload?.actions?.[0];
     const actionId = action?.action_id;

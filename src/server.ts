@@ -3,9 +3,9 @@ import { config } from './config.js';
 import { generateDraft } from './ai.js';
 import { createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
 import { extractLineEvents, findLineDisplayName, verifyLineSignature } from './line.js';
-import { handleSlackInteraction, postApprovalMessage, postLineIdentityNotification, postWorkflowNotification, verifySlackSignature } from './slack.js';
+import { handleSlackInteraction, postApprovalMessage, postFormResponseMatchNotification, postLineIdentityNotification, postWorkflowNotification, verifySlackSignature } from './slack.js';
 import { rebuildWorkflowJobs, runWorkflowTick, processWorkflowReply, WORKFLOW_STATUSES } from './workflow.js';
-import { linkLineUserFromSheets, syncSheetsToSupabase, writeApplicationsToSheets } from './sheets.js';
+import { linkLineUserFromSheets, syncFormResponseSheets, syncSheetsToSupabase, writeApplicationsToSheets } from './sheets.js';
 
 const app = express();
 
@@ -174,6 +174,19 @@ app.post('/sheets/writeback', async (req, res, next) => {
     if (!requireAdmin(req, res)) return;
     const applicationIds = Array.isArray(req.body?.applicationIds) ? req.body.applicationIds : undefined;
     res.json(await writeApplicationsToSheets({ applicationIds, dryRun: Boolean(req.body?.dryRun) }));
+  } catch (err) { next(err); }
+});
+
+app.post('/sheets/sync-form-responses', async (req, res, next) => {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const result = await syncFormResponseSheets({
+      postRows: req.body?.postRows,
+      bankRows: req.body?.bankRows,
+      dryRun: Boolean(req.body?.dryRun),
+    });
+    if (req.body?.notifySlack !== false) await postFormResponseMatchNotification(result);
+    res.json(result);
   } catch (err) { next(err); }
 });
 

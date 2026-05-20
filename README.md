@@ -72,6 +72,12 @@ Optional:
 - `SHEETS_COLUMN_MAP_JSON`
 - `SHEETS_DRY_RUN=true` to preview all Sheets writes
 - `SHEETS_WRITE_DRY_RUN=true` to preview Sheets writeback without writing
+- `POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID`
+- `POST_PARTICIPATION_RESPONSES_TAB_NAME`
+- `POST_PARTICIPATION_RESPONSE_COLUMN_MAP_JSON`
+- `BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID`
+- `BANK_ACCOUNT_RESPONSES_TAB_NAME`
+- `BANK_ACCOUNT_RESPONSE_COLUMN_MAP_JSON`
 - `POST_PARTICIPATION_FORM_URL`
 - `BANK_ACCOUNT_FORM_URL`
 - `WORKFLOW_TIMEZONE=Asia/Tokyo`
@@ -207,6 +213,31 @@ Authorization: Bearer $ADMIN_API_KEY
 ```
 
 `SHEETS_WRITE_DRY_RUN=true` makes this endpoint return planned cell updates without touching the production sheet.
+
+Sync existing Google Form response sheets:
+
+```text
+POST /sheets/sync-form-responses
+Authorization: Bearer $ADMIN_API_KEY
+```
+
+This does not use prefilled Google Form URL parameters. Existing form URLs stay unchanged, and the app reads the response sheets instead.
+
+参加確認フォーム回答は管理シートの申込行へ照合します。優先順位:
+
+1. `名前 + 案件名称 + 参加日`
+2. `名前 + 参加日`
+3. `フリガナ + 案件名称 + 参加日`
+4. `名前 + 案件名称`
+
+TS/銀行口座フォーム回答は学生単位で照合します。優先順位:
+
+1. `名前 + フリガナ`
+2. `名前 + 大学名`
+3. `フリガナ + 大学名`
+4. `名前のみ`
+
+一意に決まる場合だけ自動更新します。複数候補または一致なしの場合はSlackへ確認通知を送ります。回答シート列名が違う場合は、各 `*_COLUMN_MAP_JSON` で差し替えできます。
 
 Rebuild scheduled jobs from current applications:
 

@@ -35,6 +35,7 @@ export type SheetsColumnKey = keyof typeof DEFAULT_SHEETS_COLUMN_MAP;
 export type SheetsColumnMap = Record<SheetsColumnKey, string>;
 
 type SheetRow = Record<string, unknown> & { __rowNumber?: number };
+type SheetSource = { spreadsheetId: string; tabName: string };
 
 type NormalizedSheetRow = ReturnType<typeof normalizeRow>;
 
@@ -52,6 +53,25 @@ export type LineIdentityCandidate = {
 
 const GOOGLE_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
+const DEFAULT_POST_PARTICIPATION_RESPONSE_COLUMN_MAP = {
+  timestamp: 'タイムスタンプ',
+  studentName: '名前',
+  studentFurigana: 'フリガナ',
+  agentName: '案件名称',
+  participationDate: '参加日',
+  participationScheduledAt: '参加日時',
+} as const;
+
+const DEFAULT_BANK_ACCOUNT_RESPONSE_COLUMN_MAP = {
+  timestamp: 'タイムスタンプ',
+  studentName: '名前',
+  studentFurigana: 'フリガナ',
+  universityName: '大学名',
+} as const;
+
+type PostParticipationResponseColumnMap = typeof DEFAULT_POST_PARTICIPATION_RESPONSE_COLUMN_MAP;
+type BankAccountResponseColumnMap = typeof DEFAULT_BANK_ACCOUNT_RESPONSE_COLUMN_MAP;
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -60,6 +80,33 @@ export function sheetsColumnMap(): SheetsColumnMap {
   if (!config.SHEETS_COLUMN_MAP_JSON) return { ...DEFAULT_SHEETS_COLUMN_MAP };
   const parsed = JSON.parse(config.SHEETS_COLUMN_MAP_JSON) as Partial<SheetsColumnMap>;
   return { ...DEFAULT_SHEETS_COLUMN_MAP, ...parsed };
+}
+
+function postParticipationResponseColumnMap(): PostParticipationResponseColumnMap {
+  if (!config.POST_PARTICIPATION_RESPONSE_COLUMN_MAP_JSON) return { ...DEFAULT_POST_PARTICIPATION_RESPONSE_COLUMN_MAP };
+  const parsed = JSON.parse(config.POST_PARTICIPATION_RESPONSE_COLUMN_MAP_JSON) as Partial<PostParticipationResponseColumnMap>;
+  return { ...DEFAULT_POST_PARTICIPATION_RESPONSE_COLUMN_MAP, ...parsed };
+}
+
+function bankAccountResponseColumnMap(): BankAccountResponseColumnMap {
+  if (!config.BANK_ACCOUNT_RESPONSE_COLUMN_MAP_JSON) return { ...DEFAULT_BANK_ACCOUNT_RESPONSE_COLUMN_MAP };
+  const parsed = JSON.parse(config.BANK_ACCOUNT_RESPONSE_COLUMN_MAP_JSON) as Partial<BankAccountResponseColumnMap>;
+  return { ...DEFAULT_BANK_ACCOUNT_RESPONSE_COLUMN_MAP, ...parsed };
+}
+
+function mainSheetSource(): SheetSource {
+  return { spreadsheetId: config.GOOGLE_SHEETS_SPREADSHEET_ID, tabName: config.GOOGLE_SHEETS_TAB_NAME };
+}
+
+function responseSheetSource(kind: 'postParticipation' | 'bankAccount'): SheetSource | null {
+  if (kind === 'postParticipation') {
+    const spreadsheetId = config.POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID || config.GOOGLE_SHEETS_SPREADSHEET_ID;
+    const tabName = config.POST_PARTICIPATION_RESPONSES_TAB_NAME;
+    return spreadsheetId && tabName ? { spreadsheetId, tabName } : null;
+  }
+  const spreadsheetId = config.BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID || config.GOOGLE_SHEETS_SPREADSHEET_ID;
+  const tabName = config.BANK_ACCOUNT_RESPONSES_TAB_NAME;
+  return spreadsheetId && tabName ? { spreadsheetId, tabName } : null;
 }
 
 function value(row: SheetRow, map: SheetsColumnMap, key: SheetsColumnKey) {
@@ -269,12 +316,12 @@ async function googleAccessToken() {
   return cachedGoogleToken.token;
 }
 
-async function googleSheetsFetch(path: string, init?: RequestInit) {
-  if (!config.GOOGLE_SHEETS_SPREADSHEET_ID || !config.GOOGLE_SHEETS_TAB_NAME) {
-    throw new Error('Set GOOGLE_SHEETS_SPREADSHEET_ID and GOOGLE_SHEETS_TAB_NAME for Google Sheets access');
+async function googleSheetsFetch(path: string, init?: RequestInit, source: SheetSource = mainSheetSource()) {
+  if (!source.spreadsheetId || !source.tabName) {
+    throw new Error('Set Google Sheets spreadsheet id and tab name for access');
   }
   const token = await googleAccessToken();
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(config.GOOGLE_SHEETS_SPREADSHEET_ID)}${path}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(source.spreadsheetId)}${path}`;
   const res = await fetch(url, {
     ...init,
     headers: {
@@ -287,9 +334,9 @@ async function googleSheetsFetch(path: string, init?: RequestInit) {
   return res.json();
 }
 
-async function readSheetRows() {
-  const range = `${encodeURIComponent(config.GOOGLE_SHEETS_TAB_NAME)}!A1:ZZ`;
-  const json = await googleSheetsFetch(`/values/${range}?majorDimension=ROWS`) as any;
+async function readSheetRows(source: SheetSource = mainSheetSource()) {
+  const range = `${encodeURIComponent(source.tabName)}!A1:ZZ`;
+  const json = await googleSheetsFetch(`/values/${range}?majorDimension=ROWS`, undefined, source) as any;
   return rowsFromValues(json.values ?? []);
 }
 
@@ -304,9 +351,9 @@ function columnName(index: number) {
   return name;
 }
 
-async function headerIndexes(map: SheetsColumnMap) {
-  const range = `${encodeURIComponent(config.GOOGLE_SHEETS_TAB_NAME)}!A1:ZZ1`;
-  const json = await googleSheetsFetch(`/values/${range}?majorDimension=ROWS`) as any;
+async function headerIndexes(map: Record<string, string>, source: SheetSource = mainSheetSource()) {
+  const range = `${encodeURIComponent(source.tabName)}!A1:ZZ1`;
+  const json = await googleSheetsFetch(`/values/${range}?majorDimension=ROWS`, undefined, source) as any;
   const headers = (json.values?.[0] ?? []).map((header: unknown) => String(header ?? '').trim());
   const indexes = new Map<string, number>();
   Object.values(map).forEach((header) => {
@@ -465,7 +512,7 @@ async function writeLineUserIdToRows(input: { rows: NormalizedSheetRow[]; lineUs
   const json = await googleSheetsFetch('/values:batchUpdate', {
     method: 'POST',
     body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data }),
-  }) as any;
+  }, mainSheetSource()) as any;
   return { ok: true, dryRun: false, updatedCells: json.totalUpdatedCells ?? 0, rowNumbers };
 }
 
@@ -737,6 +784,305 @@ export async function writeApplicationsToSheets(input: { applicationIds?: string
   const json = await googleSheetsFetch('/values:batchUpdate', {
     method: 'POST',
     body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data: dataUpdates }),
-  }) as any;
+  }, mainSheetSource()) as any;
   return { ok: true, dryRun: false, updatedCells: json.totalUpdatedCells ?? 0, updatedRanges: dataUpdates.length };
+}
+
+function rawText(row: SheetRow, header: string) {
+  const raw = row[header];
+  const text = raw === undefined || raw === null ? '' : String(raw).trim();
+  return text || null;
+}
+
+function responseTextValue<T extends Record<string, string>>(row: SheetRow, map: T, key: keyof T) {
+  return rawText(row, map[key]);
+}
+
+function localDateKey(value?: string | null) {
+  if (!value) return null;
+  const iso = parseDateTime(value);
+  if (!iso) return null;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.WORKFLOW_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(iso));
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value;
+  return `${pick('year')}-${pick('month')}-${pick('day')}`;
+}
+
+function appDateKey(application: any) {
+  if (!application.participation_scheduled_at) return null;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: config.WORKFLOW_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(application.participation_scheduled_at));
+  const pick = (type: string) => parts.find((part) => part.type === type)?.value;
+  return `${pick('year')}-${pick('month')}-${pick('day')}`;
+}
+
+function sameIdentityValue(a?: string | null, b?: string | null) {
+  const left = usableIdentityText(a);
+  const right = usableIdentityText(b);
+  return Boolean(left && right && left === right);
+}
+
+function sameLooseValue(a?: string | null, b?: string | null) {
+  const left = usableIdentityText(a);
+  const right = usableIdentityText(b);
+  return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
+}
+
+function applicationName(application: any) {
+  return application.student_name ?? application.students?.name ?? application.students?.display_name ?? null;
+}
+
+function applicationFurigana(application: any) {
+  return application.student_furigana ?? application.students?.furigana ?? null;
+}
+
+function applicationUniversity(application: any) {
+  return application.university_name ?? application.students?.school_name ?? null;
+}
+
+function normalizePostParticipationResponse(row: SheetRow, map = postParticipationResponseColumnMap()) {
+  const participationDate = responseTextValue(row, map, 'participationDate') ?? responseTextValue(row, map, 'participationScheduledAt');
+  return {
+    rowNumber: row.__rowNumber,
+    timestamp: responseTextValue(row, map, 'timestamp'),
+    studentName: responseTextValue(row, map, 'studentName'),
+    studentFurigana: responseTextValue(row, map, 'studentFurigana'),
+    agentName: responseTextValue(row, map, 'agentName'),
+    participationDate,
+    participationDateKey: localDateKey(participationDate),
+    raw: row,
+  };
+}
+
+function normalizeBankAccountResponse(row: SheetRow, map = bankAccountResponseColumnMap()) {
+  return {
+    rowNumber: row.__rowNumber,
+    timestamp: responseTextValue(row, map, 'timestamp'),
+    studentName: responseTextValue(row, map, 'studentName'),
+    studentFurigana: responseTextValue(row, map, 'studentFurigana'),
+    universityName: responseTextValue(row, map, 'universityName'),
+    raw: row,
+  };
+}
+
+async function applicationPoolForFormMatching() {
+  const { data, error } = await supabase
+    .from('referral_applications')
+    .select('*, students(id,name,display_name,furigana,school_name,line_user_id,bank_form_sent_at,bank_form_answered_at)')
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .order('updated_at', { ascending: false })
+    .limit(5000);
+  if (error) throw error;
+  return data ?? [];
+}
+
+async function studentPoolForFormMatching() {
+  const { data, error } = await supabase
+    .from('students')
+    .select('*')
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .order('updated_at', { ascending: false })
+    .limit(5000);
+  if (error) throw error;
+  return data ?? [];
+}
+
+function uniqueById<T extends { id?: string }>(items: T[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+}
+
+function chooseUniqueMatch<T extends { id?: string }>(rules: Array<{ priority: number; label: string; matches: T[] }>) {
+  for (const rule of rules) {
+    const matches = uniqueById(rule.matches);
+    if (matches.length === 1) return { status: 'matched' as const, priority: rule.priority, rule: rule.label, match: matches[0], candidates: matches };
+    if (matches.length > 1) return { status: 'multiple' as const, priority: rule.priority, rule: rule.label, candidates: matches };
+  }
+  return { status: 'unmatched' as const, priority: null, rule: null, candidates: [] as T[] };
+}
+
+function matchPostParticipationResponse(response: ReturnType<typeof normalizePostParticipationResponse>, applications: any[]) {
+  const hasDate = Boolean(response.participationDateKey);
+  const rules = [
+    {
+      priority: 1,
+      label: '名前 + 案件名称 + 参加日',
+      matches: applications.filter((application) => (
+        sameIdentityValue(response.studentName, applicationName(application))
+        && sameLooseValue(response.agentName, application.agent_name)
+        && hasDate
+        && response.participationDateKey === appDateKey(application)
+      )),
+    },
+    {
+      priority: 2,
+      label: '名前 + 参加日',
+      matches: applications.filter((application) => (
+        sameIdentityValue(response.studentName, applicationName(application))
+        && hasDate
+        && response.participationDateKey === appDateKey(application)
+      )),
+    },
+    {
+      priority: 3,
+      label: 'フリガナ + 案件名称 + 参加日',
+      matches: applications.filter((application) => (
+        sameIdentityValue(response.studentFurigana, applicationFurigana(application))
+        && sameLooseValue(response.agentName, application.agent_name)
+        && hasDate
+        && response.participationDateKey === appDateKey(application)
+      )),
+    },
+    {
+      priority: 4,
+      label: '名前 + 案件名称',
+      matches: applications.filter((application) => (
+        sameIdentityValue(response.studentName, applicationName(application))
+        && sameLooseValue(response.agentName, application.agent_name)
+      )),
+    },
+  ];
+  return chooseUniqueMatch(rules);
+}
+
+function matchBankAccountResponse(response: ReturnType<typeof normalizeBankAccountResponse>, students: any[]) {
+  const rules = [
+    {
+      priority: 1,
+      label: '名前 + フリガナ',
+      matches: students.filter((student) => sameIdentityValue(response.studentName, student.name ?? student.display_name) && sameIdentityValue(response.studentFurigana, student.furigana)),
+    },
+    {
+      priority: 2,
+      label: '名前 + 大学名',
+      matches: students.filter((student) => sameIdentityValue(response.studentName, student.name ?? student.display_name) && sameLooseValue(response.universityName, student.school_name)),
+    },
+    {
+      priority: 3,
+      label: 'フリガナ + 大学名',
+      matches: students.filter((student) => sameIdentityValue(response.studentFurigana, student.furigana) && sameLooseValue(response.universityName, student.school_name)),
+    },
+    {
+      priority: 4,
+      label: '名前のみ',
+      matches: students.filter((student) => sameIdentityValue(response.studentName, student.name ?? student.display_name)),
+    },
+  ];
+  return chooseUniqueMatch(rules);
+}
+
+export function matchPostParticipationResponseForSmoke(row: SheetRow, applications: any[]) {
+  return matchPostParticipationResponse(normalizePostParticipationResponse(row), applications);
+}
+
+export function matchBankAccountResponseForSmoke(row: SheetRow, students: any[]) {
+  return matchBankAccountResponse(normalizeBankAccountResponse(row), students);
+}
+
+async function markPostParticipationAnswered(application: any, response: ReturnType<typeof normalizePostParticipationResponse>, matchRule: string, dryRun?: boolean) {
+  const answeredAt = response.timestamp ? parseDateTime(response.timestamp) ?? nowIso() : nowIso();
+  if (dryRun) return { ok: true, dryRun: true, applicationId: application.application_id, answeredAt };
+  const { error } = await supabase.from('referral_applications').update({
+    current_status: 'bank_form_send_pending',
+    post_participation_form_answered_at: answeredAt,
+    post_participation_form_response_row_number: response.rowNumber ?? null,
+    post_participation_form_response_values: response.raw,
+    sheet_values: { ...(application.sheet_values ?? {}), post_participation_form_match_rule: matchRule },
+    updated_at: nowIso(),
+  }).eq('id', application.id);
+  if (error) throw error;
+  await writeApplicationsToSheets({ applicationIds: [application.id], dryRun: effectiveSheetsDryRun(dryRun) });
+  return { ok: true, dryRun: false, applicationId: application.application_id, answeredAt };
+}
+
+async function markBankAccountAnswered(student: any, response: ReturnType<typeof normalizeBankAccountResponse>, matchRule: string, dryRun?: boolean) {
+  const answeredAt = response.timestamp ? parseDateTime(response.timestamp) ?? nowIso() : nowIso();
+  if (dryRun) return { ok: true, dryRun: true, studentId: student.id, answeredAt };
+  const { error: studentError } = await supabase.from('students').update({ bank_form_answered_at: answeredAt, updated_at: nowIso() }).eq('id', student.id);
+  if (studentError) throw studentError;
+  const { error: registrationError } = await supabase.from('student_registration_states').upsert({
+    client_id: config.DEFAULT_CLIENT_ID,
+    student_id: student.id,
+    bank_form_answered_at: answeredAt,
+    bank_form_response_row_number: response.rowNumber ?? null,
+    bank_form_response_values: response.raw,
+    metadata: { match_rule: matchRule },
+    updated_at: nowIso(),
+  }, { onConflict: 'client_id,student_id' });
+  if (registrationError && !/student_registration_states|relation .* does not exist/i.test(registrationError.message ?? '')) throw registrationError;
+  const { data: applications, error: appReadError } = await supabase
+    .from('referral_applications')
+    .select('id')
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .eq('student_id', student.id);
+  if (appReadError) throw appReadError;
+  const applicationIds = (applications ?? []).map((application: any) => application.id);
+  if (applicationIds.length > 0) {
+    const { error: appUpdateError } = await supabase.from('referral_applications').update({
+      current_status: 'payment_ready',
+      bank_form_answered_at: answeredAt,
+      updated_at: nowIso(),
+    }).in('id', applicationIds);
+    if (appUpdateError) throw appUpdateError;
+    await writeApplicationsToSheets({ applicationIds, dryRun: effectiveSheetsDryRun(dryRun) });
+  }
+  return { ok: true, dryRun: false, studentId: student.id, answeredAt, applicationIds };
+}
+
+export async function syncPostParticipationFormResponses(input: { rows?: SheetRow[]; dryRun?: boolean } = {}) {
+  const source = responseSheetSource('postParticipation');
+  if (!source && !input.rows) return { ok: true, status: 'disabled' as const, results: [] };
+  const rows = input.rows ?? await readSheetRows(source!);
+  const responses = rows.map((row) => normalizePostParticipationResponse(row));
+  const applications = await applicationPoolForFormMatching();
+  const results = [];
+  for (const response of responses) {
+    const match = matchPostParticipationResponse(response, applications);
+    if (match.status === 'matched') {
+      const update = await markPostParticipationAnswered(match.match, response, match.rule, input.dryRun);
+      results.push({ ok: true, status: 'matched', response, matchRule: match.rule, application: match.match, update });
+    } else {
+      results.push({ ok: false, status: match.status, response, matchRule: match.rule, candidates: match.candidates });
+    }
+  }
+  return { ok: true, dryRun: Boolean(input.dryRun), type: 'post_participation', results };
+}
+
+export async function syncBankAccountFormResponses(input: { rows?: SheetRow[]; dryRun?: boolean } = {}) {
+  const source = responseSheetSource('bankAccount');
+  if (!source && !input.rows) return { ok: true, status: 'disabled' as const, results: [] };
+  const rows = input.rows ?? await readSheetRows(source!);
+  const responses = rows.map((row) => normalizeBankAccountResponse(row));
+  const students = await studentPoolForFormMatching();
+  const results = [];
+  for (const response of responses) {
+    const match = matchBankAccountResponse(response, students);
+    if (match.status === 'matched') {
+      const update = await markBankAccountAnswered(match.match, response, match.rule, input.dryRun);
+      results.push({ ok: true, status: 'matched', response, matchRule: match.rule, student: match.match, update });
+    } else {
+      results.push({ ok: false, status: match.status, response, matchRule: match.rule, candidates: match.candidates });
+    }
+  }
+  return { ok: true, dryRun: Boolean(input.dryRun), type: 'bank_account', results };
+}
+
+export async function syncFormResponseSheets(input: { postRows?: SheetRow[]; bankRows?: SheetRow[]; dryRun?: boolean } = {}) {
+  const [postParticipation, bankAccount] = await Promise.all([
+    syncPostParticipationFormResponses({ rows: input.postRows, dryRun: input.dryRun }),
+    syncBankAccountFormResponses({ rows: input.bankRows, dryRun: input.dryRun }),
+  ]);
+  return { ok: true, dryRun: Boolean(input.dryRun), postParticipation, bankAccount };
 }
