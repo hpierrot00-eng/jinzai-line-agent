@@ -5,6 +5,7 @@ import { generateRevisionDraft } from './ai.js';
 import { findRelevantKnowledge, getDraftWithContext, getMonthlyRulesForReply, getRecentMessages, markDraftSendFailed, recordApprovalAction, recordDeliveryAttempt, recordOutgoingAndApproval, saveDraft, saveSlackReview, supabase } from './db.js';
 import { sendLineMessage } from './line.js';
 import { selectWorkflowApplication } from './workflow.js';
+import { confirmLineIdentityLink } from './sheets.js';
 export const slack = new WebClient(config.SLACK_BOT_TOKEN);
 function errorMessage(err) {
     if (err instanceof Error)
@@ -106,6 +107,24 @@ function workflowSentText(sentTexts) {
         return '送信文なし';
     return sentTexts.map((text, index) => `${index + 1}. ${truncateText(text, 500)}`).join('\n');
 }
+function identityCandidateLabel(candidate) {
+    const parts = [
+        candidate.studentName ? `名前: ${candidate.studentName}` : null,
+        candidate.studentFurigana ? `フリガナ: ${candidate.studentFurigana}` : null,
+        candidate.lineDisplayName ? `LINE名: ${candidate.lineDisplayName}` : null,
+        candidate.externalStudentId ? `student_id: ${candidate.externalStudentId}` : null,
+        candidate.applicationIds?.length ? `申込: ${candidate.applicationIds.join(', ')}` : null,
+    ].filter(Boolean);
+    return parts.join(' / ') || candidate.matchKey;
+}
+function identitySelectionValue(candidate, event) {
+    return JSON.stringify({
+        matchKey: candidate.matchKey,
+        lineUserId: event.lineUserId,
+        displayName: event.displayName ?? '',
+        eventText: String(event.text ?? '').slice(0, 900),
+    });
+}
 function retryBlocks(replyDraftId, text, error) {
     return [
         { type: 'section', text: { type: 'mrkdwn', text: `⚠️ LINE送信に失敗しました\n*理由:*\n${error}\n\n返信案はまだ送信されていません。設定確認後に再送できます。` } },
@@ -200,6 +219,50 @@ export async function postWorkflowNotification(workflow, event, student) {
     }
     return result;
 }
+export async function postLineIdentityNotification(result, event, student) {
+    if (result.status === 'multiple') {
+        const elements = result.candidates.slice(0, 5).map((candidate, index) => ({
+            type: 'button',
+            text: { type: 'plain_text', text: `候補${index + 1}に紐づけ` },
+            action_id: 'line_identity_select',
+            value: identitySelectionValue(candidate, event),
+        }));
+        const blocks = [
+            { type: 'header', text: { type: 'plain_text', text: 'LINEユーザー紐づけ候補', emoji: true } },
+            { type: 'section', fields: [
+                    { type: 'mrkdwn', text: `*受信LINE:*\n${customerLabel(student)}` },
+                    { type: 'mrkdwn', text: `*抽出候補:*\n${(result.nameCandidates ?? []).join(', ') || 'なし'}` },
+                ] },
+            { type: 'section', text: { type: 'mrkdwn', text: `*受信文:*\n${truncateText(event.text, 650)}` } },
+            { type: 'section', text: { type: 'mrkdwn', text: `*候補:*\n${result.candidates.map((candidate, index) => `${index + 1}. ${identityCandidateLabel(candidate)} / score: ${candidate.score} / ${candidate.reasons.join(', ')}`).join('\n')}` } },
+            { type: 'actions', elements },
+        ];
+        const slackResult = await slack.chat.postMessage({
+            channel: config.SLACK_APPROVAL_CHANNEL_ID,
+            text: `LINEユーザー紐づけ候補: ${student?.display_name ?? student?.line_user_id ?? event.lineUserId}`,
+            blocks,
+        });
+        if (!slackResult.ok)
+            throw new Error(`Slack identity notification failed: ${slackResult.error}`);
+        return slackResult;
+    }
+    const blocks = [
+        { type: 'header', text: { type: 'plain_text', text: 'LINEユーザー未紐づけ', emoji: true } },
+        { type: 'section', fields: [
+                { type: 'mrkdwn', text: `*受信LINE:*\n${customerLabel(student)}` },
+                { type: 'mrkdwn', text: `*抽出候補:*\n${(result.nameCandidates ?? []).join(', ') || 'なし'}` },
+            ] },
+        { type: 'section', text: { type: 'mrkdwn', text: `*受信文:*\n${truncateText(event.text, 650)}\n\nSheetsの名前・フリガナ・LINE名のいずれにも一意一致しませんでした。` } },
+    ];
+    const slackResult = await slack.chat.postMessage({
+        channel: config.SLACK_APPROVAL_CHANNEL_ID,
+        text: `LINEユーザー未紐づけ: ${student?.display_name ?? student?.line_user_id ?? event.lineUserId}`,
+        blocks,
+    });
+    if (!slackResult.ok)
+        throw new Error(`Slack identity notification failed: ${slackResult.error}`);
+    return slackResult;
+}
 export async function handleSlackInteraction(payload) {
     const action = payload?.actions?.[0];
     const actionId = action?.action_id;
@@ -223,6 +286,37 @@ export async function handleSlackInteraction(payload) {
             blocks: [
                 { type: 'section', text: { type: 'mrkdwn', text: `✅ 選択した申込で自動処理しました\n*送信内容:*\n${workflowSentText(result.sentTexts ?? [])}` } },
             ],
+        });
+        return;
+    }
+    if (actionId === 'line_identity_select') {
+        const selection = JSON.parse(action.value || '{}');
+        const result = await confirmLineIdentityLink({
+            matchKey: selection.matchKey,
+            lineUserId: selection.lineUserId,
+            displayName: selection.displayName || undefined,
+            eventText: selection.eventText ?? '',
+        });
+        if (!result.ok) {
+            await slack.chat.update({
+                channel: payload.channel.id,
+                ts: payload.message.ts,
+                text: 'LINE紐づけ失敗',
+                blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '⚠️ 候補が見つからず、LINEユーザーIDを紐づけできませんでした。Sheetsの内容を確認してください。' } }],
+            });
+            return;
+        }
+        await slack.chat.update({
+            channel: payload.channel.id,
+            ts: payload.message.ts,
+            text: 'LINE紐づけ済み',
+            blocks: [{
+                    type: 'section',
+                    text: {
+                        type: 'mrkdwn',
+                        text: `✅ LINEユーザーIDを紐づけました\n*対象:*\n${identityCandidateLabel(result.candidate)}\n*更新行数:*\n${result.linkedRows}\n*Sheets dry-run:*\n${result.sheetWrite?.dryRun ? 'true' : 'false'}`,
+                    },
+                }],
         });
         return;
     }

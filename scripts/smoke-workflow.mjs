@@ -57,4 +57,18 @@ const rendered = workflow.renderWorkflowTemplate(workflow.WORKFLOW_TEMPLATE_BODI
 });
 if (!rendered.includes('Vire') || !rendered.includes('18:00')) throw new Error('template rendering failed');
 
+const nameCandidates = sheets.extractStudentNameCandidates('山田太郎です。確認しました', '山田太郎');
+if (!nameCandidates.includes('山田太郎')) throw new Error('student name extraction failed');
+
+const identity = await sheets.findLineIdentityCandidates({
+  event: { lineUserId: 'Unew001', displayName: '山田太郎', text: '山田太郎です。確認しました' },
+  rows: [
+    { __rowNumber: 2, application_id: 'app-a', student_id: 's-yamada', 学生名: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
+    { __rowNumber: 3, application_id: 'app-b', student_id: 's-yamada', 学生名: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
+    { __rowNumber: 4, application_id: 'app-c', student_id: 's-sato', 学生名: '佐藤花子', フリガナ: 'サトウハナコ', LINE名: 'hanako' },
+  ],
+});
+if (identity.status !== 'unique') throw new Error(`identity match should be unique: ${identity.status}`);
+if (identity.candidates[0].applicationIds.length !== 2) throw new Error('identity match should include all same-student application rows');
+
 console.log('Workflow smoke passed');

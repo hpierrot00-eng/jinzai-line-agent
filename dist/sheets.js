@@ -6,6 +6,8 @@ export const DEFAULT_SHEETS_COLUMN_MAP = {
     externalStudentId: 'student_id',
     lineUserId: 'LINEユーザーID',
     studentName: '学生名',
+    studentFurigana: 'フリガナ',
+    lineDisplayName: 'LINE名',
     agentName: '提携エージェント名',
     participationScheduledAt: '参加予定日時',
     currentStatus: '現在ステータス',
@@ -39,6 +41,18 @@ function textValue(row, map, key) {
     const raw = value(row, map, key);
     const text = raw === undefined || raw === null ? '' : String(raw).trim();
     return text || null;
+}
+function fallbackTextValue(row, map, key, fallbacks) {
+    const mapped = textValue(row, map, key);
+    if (mapped)
+        return mapped;
+    for (const fallback of fallbacks) {
+        const raw = row[fallback];
+        const text = raw === undefined || raw === null ? '' : String(raw).trim();
+        if (text)
+            return text;
+    }
+    return null;
 }
 function boolValue(row, map, key, defaultValue = false) {
     const raw = textValue(row, map, key);
@@ -108,6 +122,40 @@ function rowsFromValues(values) {
         });
         return object;
     });
+}
+function normalizeIdentityText(value) {
+    return String(value ?? '')
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/[ぁ-ゖ]/g, (char) => String.fromCharCode(char.charCodeAt(0) + 0x60))
+        .replace(/[\s　・･、。,.，．!！?？:：;；'"“”‘’「」『』（）()[\]{}<>＜＞\-ー_]/g, '');
+}
+function usableIdentityText(value) {
+    const normalized = normalizeIdentityText(value);
+    return normalized.length >= 2 ? normalized : null;
+}
+function uniqueStrings(values) {
+    return [...new Set(values.map((value) => String(value ?? '').trim()).filter(Boolean))];
+}
+export function extractStudentNameCandidates(text, displayName) {
+    const candidates = new Set();
+    if (displayName)
+        candidates.add(displayName);
+    const source = String(text ?? '').normalize('NFKC');
+    const patterns = [
+        /(?:名前|氏名|なまえ|LINE名|ライン名|私は|わたしは|僕は|ぼくは|自分は)\s*(?:は|:|：)?\s*([一-龠々〆ヵヶぁ-んァ-ヶーA-Za-zＡ-Ｚａ-ｚ\s　]{2,30})/g,
+        /([一-龠々〆ヵヶぁ-んァ-ヶーA-Za-zＡ-Ｚａ-ｚ\s　]{2,24})(?:です|と申します|といいます|と言います|になります)/g,
+    ];
+    for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
+            const value = String(match[1] ?? '')
+                .replace(/(です|と申します|といいます|と言います|になります).*$/, '')
+                .trim();
+            if (usableIdentityText(value))
+                candidates.add(value);
+        }
+    }
+    return uniqueStrings([...candidates]);
 }
 function base64url(input) {
     return Buffer.from(input).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -197,7 +245,9 @@ function normalizeRow(row, map) {
         applicationId: textValue(row, map, 'applicationId'),
         externalStudentId: textValue(row, map, 'externalStudentId'),
         lineUserId: textValue(row, map, 'lineUserId'),
-        studentName: textValue(row, map, 'studentName'),
+        studentName: fallbackTextValue(row, map, 'studentName', ['名前', '氏名']),
+        studentFurigana: fallbackTextValue(row, map, 'studentFurigana', ['ふりがな', 'カナ']),
+        lineDisplayName: fallbackTextValue(row, map, 'lineDisplayName', ['LINE表示名', 'ライン名']),
         agentName: textValue(row, map, 'agentName'),
         participationScheduledAt: parseDateTime(textValue(row, map, 'participationScheduledAt')),
         currentStatus: applicationStatus(textValue(row, map, 'currentStatus')),
@@ -209,6 +259,198 @@ function normalizeRow(row, map) {
 }
 export function normalizeSheetRowForSmoke(row, map = sheetsColumnMap()) {
     return normalizeRow(row, map);
+}
+function rowIdentityKey(row) {
+    const external = usableIdentityText(row.externalStudentId);
+    if (external)
+        return `external:${external}`;
+    const name = usableIdentityText(row.studentName);
+    if (name)
+        return `name:${name}`;
+    const lineName = usableIdentityText(row.lineDisplayName);
+    if (lineName)
+        return `line:${lineName}`;
+    return `row:${row.rowNumber ?? row.applicationId ?? 'unknown'}`;
+}
+function sameIdentity(row, candidate) {
+    const external = usableIdentityText(row.externalStudentId);
+    const name = usableIdentityText(row.studentName);
+    const lineName = usableIdentityText(row.lineDisplayName);
+    return Boolean((candidate.externalStudentId && external && external === usableIdentityText(candidate.externalStudentId))
+        || (candidate.studentName && name && name === usableIdentityText(candidate.studentName))
+        || (candidate.lineDisplayName && lineName && lineName === usableIdentityText(candidate.lineDisplayName)));
+}
+function buildLineIdentityCandidates(input) {
+    const nameCandidates = extractStudentNameCandidates(input.event.text, input.event.displayName);
+    const normalizedNameCandidates = nameCandidates.map(usableIdentityText).filter((value) => Boolean(value));
+    const normalizedText = normalizeIdentityText(input.event.text);
+    const normalizedDisplayName = usableIdentityText(input.event.displayName);
+    const groups = new Map();
+    for (const row of input.rows) {
+        if (row.lineUserId && row.lineUserId !== input.event.lineUserId)
+            continue;
+        const key = rowIdentityKey(row);
+        const existing = groups.get(key) ?? [];
+        existing.push(row);
+        groups.set(key, existing);
+    }
+    const candidates = [];
+    for (const [matchKey, rows] of groups) {
+        let score = 0;
+        const reasons = new Set();
+        for (const row of rows) {
+            const external = usableIdentityText(row.externalStudentId);
+            const name = usableIdentityText(row.studentName);
+            const furigana = usableIdentityText(row.studentFurigana);
+            const lineName = usableIdentityText(row.lineDisplayName);
+            if (row.lineUserId === input.event.lineUserId) {
+                score = Math.max(score, 120);
+                reasons.add('Sheetsに同じLINEユーザーIDが既にあります');
+            }
+            if (external && normalizedText.includes(external)) {
+                score = Math.max(score, 100);
+                reasons.add('本文にstudent_idが含まれています');
+            }
+            if (lineName && normalizedDisplayName && lineName === normalizedDisplayName) {
+                score = Math.max(score, 100);
+                reasons.add('LINE表示名が一致しました');
+            }
+            if (lineName && normalizedNameCandidates.includes(lineName)) {
+                score = Math.max(score, 95);
+                reasons.add('LINE名候補が一致しました');
+            }
+            if (name && normalizedNameCandidates.includes(name)) {
+                score = Math.max(score, 95);
+                reasons.add('名前候補が一致しました');
+            }
+            if (furigana && normalizedNameCandidates.includes(furigana)) {
+                score = Math.max(score, 90);
+                reasons.add('フリガナ候補が一致しました');
+            }
+            if (name && name.length >= 3 && normalizedText.includes(name)) {
+                score = Math.max(score, 82);
+                reasons.add('本文に名前が含まれています');
+            }
+            if (lineName && lineName.length >= 3 && normalizedText.includes(lineName)) {
+                score = Math.max(score, 82);
+                reasons.add('本文にLINE名が含まれています');
+            }
+            if (furigana && furigana.length >= 3 && normalizedText.includes(furigana)) {
+                score = Math.max(score, 80);
+                reasons.add('本文にフリガナが含まれています');
+            }
+        }
+        if (score >= 80) {
+            candidates.push({
+                matchKey,
+                score,
+                reasons: [...reasons],
+                rowNumbers: rows.map((row) => Number(row.rowNumber)).filter((rowNumber) => Number.isFinite(rowNumber)),
+                applicationIds: uniqueStrings(rows.map((row) => row.applicationId)),
+                studentName: rows.find((row) => row.studentName)?.studentName ?? null,
+                studentFurigana: rows.find((row) => row.studentFurigana)?.studentFurigana ?? null,
+                lineDisplayName: rows.find((row) => row.lineDisplayName)?.lineDisplayName ?? null,
+                externalStudentId: rows.find((row) => row.externalStudentId)?.externalStudentId ?? null,
+            });
+        }
+    }
+    return candidates.sort((a, b) => b.score - a.score || b.rowNumbers.length - a.rowNumbers.length);
+}
+async function writeLineUserIdToRows(input) {
+    const map = sheetsColumnMap();
+    const rowNumbers = [...new Set(input.rows.map((row) => Number(row.rowNumber)).filter((rowNumber) => Number.isFinite(rowNumber)))];
+    if (rowNumbers.length === 0)
+        return { ok: true, dryRun: true, updatedCells: 0, rowNumbers };
+    if (input.dryRun || config.SHEETS_WRITE_DRY_RUN || !config.GOOGLE_SHEETS_SPREADSHEET_ID) {
+        return { ok: true, dryRun: true, updatedCells: 0, rowNumbers };
+    }
+    const indexes = await headerIndexes(map);
+    const lineUserIdIndex = indexes.get(map.lineUserId);
+    if (lineUserIdIndex === undefined)
+        throw new Error(`Google Sheets header not found for ${map.lineUserId}`);
+    const data = rowNumbers.map((rowNumber) => ({
+        range: `${config.GOOGLE_SHEETS_TAB_NAME}!${columnName(lineUserIdIndex)}${rowNumber}`,
+        values: [[input.lineUserId]],
+    }));
+    const json = await googleSheetsFetch('/values:batchUpdate', {
+        method: 'POST',
+        body: JSON.stringify({ valueInputOption: 'USER_ENTERED', data }),
+    });
+    return { ok: true, dryRun: false, updatedCells: json.totalUpdatedCells ?? 0, rowNumbers };
+}
+async function syncLinkedRowsToSupabase(input) {
+    if (input.dryRun)
+        return { ok: true, dryRun: true, rows: input.rows.length, results: [] };
+    const map = sheetsColumnMap();
+    const rows = input.rows.map((row) => ({
+        ...row.raw,
+        __rowNumber: row.rowNumber,
+        [map.lineUserId]: input.lineUserId,
+        [map.lineDisplayName]: row.lineDisplayName ?? input.displayName ?? '',
+    }));
+    return syncSheetsToSupabase({ rows });
+}
+function rowsForCandidate(rows, candidate) {
+    const selected = rows.filter((row) => sameIdentity(row, candidate));
+    return selected.length > 0 ? selected : rows.filter((row) => candidate.rowNumbers.includes(Number(row.rowNumber)));
+}
+export async function findLineIdentityCandidates(input) {
+    if (!config.GOOGLE_SHEETS_SPREADSHEET_ID && !input.rows) {
+        return { ok: true, status: 'disabled', reason: 'GOOGLE_SHEETS_SPREADSHEET_ID is not set', candidates: [], nameCandidates: [] };
+    }
+    const map = sheetsColumnMap();
+    const sourceRows = input.rows ?? await readSheetRows();
+    const rows = sourceRows.map((row) => normalizeRow(row, map));
+    const existingRows = rows.filter((row) => row.lineUserId === input.event.lineUserId);
+    const nameCandidates = extractStudentNameCandidates(input.event.text, input.event.displayName);
+    if (existingRows.length > 0) {
+        const candidateRows = rows.filter((row) => existingRows.some((existing) => sameIdentity(row, {
+            matchKey: rowIdentityKey(existing),
+            score: 120,
+            reasons: [],
+            rowNumbers: [Number(existing.rowNumber)],
+            applicationIds: existing.applicationId ? [existing.applicationId] : [],
+            studentName: existing.studentName,
+            studentFurigana: existing.studentFurigana,
+            lineDisplayName: existing.lineDisplayName,
+            externalStudentId: existing.externalStudentId,
+        })));
+        const candidate = buildLineIdentityCandidates({ event: input.event, rows: candidateRows })[0];
+        return { ok: true, status: 'existing', candidates: candidate ? [candidate] : [], rows: candidateRows, nameCandidates };
+    }
+    const candidates = buildLineIdentityCandidates({ event: input.event, rows });
+    if (candidates.length === 0)
+        return { ok: true, status: 'unmatched', candidates, rows, nameCandidates };
+    if (candidates.length === 1)
+        return { ok: true, status: 'unique', candidates, rows, nameCandidates };
+    return { ok: true, status: 'multiple', candidates, rows, nameCandidates };
+}
+export async function linkLineUserFromSheets(input) {
+    const found = await findLineIdentityCandidates({ event: input.event });
+    if (found.status === 'disabled' || found.status === 'unmatched' || found.status === 'multiple')
+        return found;
+    const candidate = found.candidates[0];
+    if (!candidate)
+        return { ...found, status: 'unmatched' };
+    const rows = rowsForCandidate(found.rows ?? [], candidate);
+    const [sheetWrite, supabaseSync] = await Promise.all([
+        writeLineUserIdToRows({ rows, lineUserId: input.event.lineUserId, dryRun: input.dryRun }),
+        syncLinkedRowsToSupabase({ rows, lineUserId: input.event.lineUserId, displayName: input.event.displayName, dryRun: input.dryRun }),
+    ]);
+    return { ...found, status: found.status === 'existing' ? 'existing' : 'linked', candidate, linkedRows: rows.length, sheetWrite, supabaseSync };
+}
+export async function confirmLineIdentityLink(input) {
+    const event = { lineUserId: input.lineUserId, displayName: input.displayName, text: input.eventText, messageType: 'text' };
+    const found = await findLineIdentityCandidates({ event });
+    const candidate = found.candidates.find((item) => item.matchKey === input.matchKey);
+    if (!candidate || !('rows' in found))
+        return { ok: false, status: 'candidate_not_found', candidates: found.candidates };
+    const rows = rowsForCandidate(found.rows ?? [], candidate);
+    const [sheetWrite, supabaseSync] = await Promise.all([
+        writeLineUserIdToRows({ rows, lineUserId: input.lineUserId, dryRun: input.dryRun }),
+        syncLinkedRowsToSupabase({ rows, lineUserId: input.lineUserId, displayName: input.displayName, dryRun: input.dryRun }),
+    ]);
+    return { ok: true, status: 'linked', candidate, linkedRows: rows.length, sheetWrite, supabaseSync };
 }
 export async function syncSheetsToSupabase(input = {}) {
     const map = sheetsColumnMap();

@@ -20,6 +20,7 @@ Slack承認型のLINE学生対応AI MVPです。
 - Message templates for stable category-specific reply wording
 - Application-based workflow automation for same-day reminders, post-participation forms, and TS/bank-account forms
 - Google Sheets sync/writeback for the operator ledger, with configurable column names and dry-run mode
+- First LINE replies can auto-link `lineUserId` to Sheets rows by matching student name, furigana, or LINE display name
 - Low-risk `確認しました` / `回答しました` replies can be auto-processed while ambiguous or risky replies still go to Slack for human confirmation
 - Optional LINE Harness tag mirroring for operator visibility; Supabase remains the source of truth
 
@@ -140,6 +141,8 @@ Sheets is treated as `1 row = 1 application`. Default recommended columns:
 - `student_id`
 - `LINEユーザーID`
 - `学生名`
+- `フリガナ`
+- `LINE名`
 - `提携エージェント名`
 - `参加予定日時`
 - `現在ステータス`
@@ -162,9 +165,19 @@ If the production sheet uses different headers, set `SHEETS_COLUMN_MAP_JSON`. On
   "applicationId": "申込ID",
   "lineUserId": "LINE ID",
   "studentName": "氏名",
+  "studentFurigana": "氏名カナ",
+  "lineDisplayName": "LINE表示名",
   "participationScheduledAt": "参加日時"
 }
 ```
+
+LINEユーザーIDは原則として手入力不要です。初回LINE受信時に `lineUserId`, `displayName`, `text` を使って Sheets の `学生名` / `フリガナ` / `LINE名` を照合します。
+
+- 一意一致: 同じ `student_id`、同じ名前、または同じLINE名の申込行すべてに `LINEユーザーID` を書き戻し、Supabaseにも同期します。
+- 複数一致: Slackに候補一覧と `候補に紐づけ` ボタンを出します。
+- 不一致: Slackに未紐づけ通知を出します。
+
+`SHEETS_WRITE_DRY_RUN=true` の間は、Sheetsへの書き戻しはプレビュー扱いですが、通常のSheets同期やLINE受信処理の検証はできます。
 
 Sync Sheets into Supabase:
 

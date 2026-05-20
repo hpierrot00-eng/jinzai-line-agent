@@ -3,9 +3,9 @@ import { config } from './config.js';
 import { generateDraft } from './ai.js';
 import { createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
 import { extractLineEvents, findLineDisplayName, verifyLineSignature } from './line.js';
-import { handleSlackInteraction, postApprovalMessage, postWorkflowNotification, verifySlackSignature } from './slack.js';
+import { handleSlackInteraction, postApprovalMessage, postLineIdentityNotification, postWorkflowNotification, verifySlackSignature } from './slack.js';
 import { rebuildWorkflowJobs, runWorkflowTick, processWorkflowReply, WORKFLOW_STATUSES } from './workflow.js';
-import { syncSheetsToSupabase, writeApplicationsToSheets } from './sheets.js';
+import { linkLineUserFromSheets, syncSheetsToSupabase, writeApplicationsToSheets } from './sheets.js';
 
 const app = express();
 
@@ -34,6 +34,16 @@ async function processInbound(body: any) {
     const student = await upsertStudent(eventWithProfile);
     const conversation = await getOrCreateConversation(student.id);
     const incoming = await saveIncomingMessage(eventWithProfile, student.id, conversation.id);
+
+    try {
+      const identityLink = await linkLineUserFromSheets({ event: eventWithProfile, dryRun });
+      if (identityLink.status === 'multiple' || identityLink.status === 'unmatched') {
+        await postLineIdentityNotification(identityLink, eventWithProfile, student);
+      }
+    } catch (err) {
+      // Identity linking is an operator convenience. It must not block LINE intake.
+      console.warn('LINE identity linking skipped:', errorMessage(err));
+    }
 
     try {
       const workflow = await processWorkflowReply({ student, event: eventWithProfile, dryRun });
