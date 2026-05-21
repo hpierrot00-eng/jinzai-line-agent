@@ -55,7 +55,8 @@ export const WORKFLOW_TEMPLATE_BODIES = {
 
 （非承認になってしまった場合報酬が支払われないので、ご了承ください）
 
-上記注意事項を徹底に守っていただくことや2回目参加などして企業紹介など受けていただければ基本承認になるのでご安心ください！☺️確実に承認にしたい場合は2回目を出ていただき、企業紹介など受けてもらえると確率が圧倒的に高くなります！
+上記注意事項を徹底に守っていただくことや2回目参加などして企業紹介など受けていただければ基本承認になるのでご安心ください！
+確実に承認にしたい場合は2回目を出ていただき、企業紹介など受けてもらえると確率が圧倒的に高くなります！
 
 分からない事などありましたら気軽にご連絡ください！
 
@@ -112,8 +113,14 @@ function formatParticipationTime(dateIso) {
         hour12: false,
     }).format(new Date(dateIso));
 }
+export function normalizeWorkflowTemplateBody(body) {
+    return body
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/:relaxed:/g, '');
+}
 export function renderWorkflowTemplate(body, values) {
-    return body.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
+    return normalizeWorkflowTemplateBody(body).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_match, key) => {
         const value = values[key];
         return value === undefined || value === null ? '' : String(value);
     });
@@ -138,7 +145,7 @@ function fallbackTemplate(key) {
     return {
         key,
         title: key,
-        body,
+        body: normalizeWorkflowTemplateBody(body),
         version: 1,
         sendMode: DEFAULT_TEMPLATE_SEND_MODES[key] ?? 'approval_required',
         status: 'active',
@@ -168,7 +175,7 @@ async function getWorkflowTemplate(key) {
             return {
                 key: legacy.data.key,
                 title: legacy.data.title ?? legacy.data.key,
-                body: legacy.data.body ?? fallbackTemplate(key).body,
+                body: normalizeWorkflowTemplateBody(legacy.data.body ?? fallbackTemplate(key).body),
                 version: 1,
                 sendMode: DEFAULT_TEMPLATE_SEND_MODES[key] ?? 'approval_required',
                 status: legacy.data.status ?? 'active',
@@ -181,7 +188,7 @@ async function getWorkflowTemplate(key) {
     return {
         key: data.key,
         title: data.title ?? data.key,
-        body: data.body ?? fallbackTemplate(key).body,
+        body: normalizeWorkflowTemplateBody(data.body ?? fallbackTemplate(key).body),
         version: Number(data.version ?? 1),
         sendMode: data.send_mode ?? DEFAULT_TEMPLATE_SEND_MODES[key] ?? 'approval_required',
         status: data.status ?? 'active',
