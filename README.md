@@ -279,6 +279,23 @@ Authorization: Bearer $ADMIN_API_KEY
 
 Use `{"dryRun": true}` to render planned LINE messages without sending. A typical Render Cron can call `/workflow/tick` every 5-15 minutes. Templates with `send_mode=approval_required` are not sent directly; `/workflow/tick` posts a Slack card and stores the rendered text, template key/version, Slack message location, and later approval metadata on the workflow job.
 
+For Render Cron Jobs, use the bundled runner so API keys are read from cron environment variables and never placed in the command:
+
+```bash
+npm run cron:ops
+```
+
+Recommended cron env:
+
+```text
+ADMIN_API_KEY=<same value as the web service>
+CRON_BASE_URL=https://jinzai-line-agent.onrender.com
+CRON_DRY_RUN=false
+WORKFLOW_TICK_LIMIT=20
+```
+
+`cron:ops` runs Sheets sync, form-response sync, job rebuild, and workflow tick in that order. For split schedules, use `cron:sheets-sync`, `cron:sync-form-responses`, `cron:rebuild-jobs`, and `cron:workflow-tick`.
+
 List valid statuses:
 
 ```text
