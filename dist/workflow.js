@@ -464,6 +464,17 @@ function statusPatchForJob(job) {
     }
     return { status: null, patch: { last_line_sent_at: sentAt } };
 }
+function applicationCustomerLabel(application) {
+    const displayName = application.students?.display_name ?? application.line_display_name ?? application.student_name ?? null;
+    const lineId = application.line_user_id ?? application.students?.line_user_id ?? null;
+    if (displayName && lineId)
+        return `${displayName}\nLINE ID: ${lineId}`;
+    if (displayName)
+        return displayName;
+    if (lineId)
+        return `LINE ID: ${lineId}`;
+    return '不明';
+}
 function workflowApprovalBlocks(job, application, template, text) {
     const scheduled = application.participation_scheduled_at
         ? new Intl.DateTimeFormat('ja-JP', {
@@ -478,7 +489,7 @@ function workflowApprovalBlocks(job, application, template, text) {
     return [
         { type: 'header', text: { type: 'plain_text', text: '参加前注意事項 承認待ち', emoji: true } },
         { type: 'section', fields: [
-                { type: 'mrkdwn', text: `*顧客:*\n${application.student_name ?? application.students?.display_name ?? application.line_user_id ?? '不明'}` },
+                { type: 'mrkdwn', text: `*顧客:*\n${applicationCustomerLabel(application)}` },
                 { type: 'mrkdwn', text: `*申込:*\n${application.application_id} / ${application.agent_name ?? '案件未設定'} / ${scheduled}` },
                 { type: 'mrkdwn', text: `*template:*\n${template.key} v${template.version}` },
                 { type: 'mrkdwn', text: `*send_mode:*\n${template.sendMode}` },
@@ -494,7 +505,7 @@ function workflowApprovalBlocks(job, application, template, text) {
 async function postWorkflowApprovalCard(job, application, template, text) {
     const result = await workflowSlack.chat.postMessage({
         channel: config.SLACK_APPROVAL_CHANNEL_ID,
-        text: `参加前注意事項 承認待ち: ${application.student_name ?? application.line_user_id ?? application.application_id}`,
+        text: `参加前注意事項 承認待ち: ${application.students?.display_name ?? application.line_display_name ?? application.student_name ?? application.line_user_id ?? application.application_id}`,
         blocks: workflowApprovalBlocks(job, application, template, text),
     });
     if (!result.ok || !result.ts || !result.channel)

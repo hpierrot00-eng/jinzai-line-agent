@@ -112,6 +112,7 @@ type ReferralApplication = {
   student_id: string;
   line_user_id?: string | null;
   student_name?: string | null;
+  line_display_name?: string | null;
   agent_name?: string | null;
   participation_scheduled_at?: string | null;
   current_status: WorkflowStatus;
@@ -540,6 +541,15 @@ function statusPatchForJob(job: WorkflowJob) {
   return { status: null, patch: { last_line_sent_at: sentAt } };
 }
 
+function applicationCustomerLabel(application: ReferralApplication) {
+  const displayName = application.students?.display_name ?? application.line_display_name ?? application.student_name ?? null;
+  const lineId = application.line_user_id ?? application.students?.line_user_id ?? null;
+  if (displayName && lineId) return `${displayName}\nLINE ID: ${lineId}`;
+  if (displayName) return displayName;
+  if (lineId) return `LINE ID: ${lineId}`;
+  return '不明';
+}
+
 function workflowApprovalBlocks(job: WorkflowJob, application: ReferralApplication, template: WorkflowTemplate, text: string) {
   const scheduled = application.participation_scheduled_at
     ? new Intl.DateTimeFormat('ja-JP', {
@@ -554,7 +564,7 @@ function workflowApprovalBlocks(job: WorkflowJob, application: ReferralApplicati
   return [
     { type: 'header', text: { type: 'plain_text', text: '参加前注意事項 承認待ち', emoji: true } },
     { type: 'section', fields: [
-      { type: 'mrkdwn', text: `*顧客:*\n${application.student_name ?? application.students?.display_name ?? application.line_user_id ?? '不明'}` },
+      { type: 'mrkdwn', text: `*顧客:*\n${applicationCustomerLabel(application)}` },
       { type: 'mrkdwn', text: `*申込:*\n${application.application_id} / ${application.agent_name ?? '案件未設定'} / ${scheduled}` },
       { type: 'mrkdwn', text: `*template:*\n${template.key} v${template.version}` },
       { type: 'mrkdwn', text: `*send_mode:*\n${template.sendMode}` },
@@ -571,7 +581,7 @@ function workflowApprovalBlocks(job: WorkflowJob, application: ReferralApplicati
 async function postWorkflowApprovalCard(job: WorkflowJob, application: ReferralApplication, template: WorkflowTemplate, text: string) {
   const result = await workflowSlack.chat.postMessage({
     channel: config.SLACK_APPROVAL_CHANNEL_ID,
-    text: `参加前注意事項 承認待ち: ${application.student_name ?? application.line_user_id ?? application.application_id}`,
+    text: `参加前注意事項 承認待ち: ${application.students?.display_name ?? application.line_display_name ?? application.student_name ?? application.line_user_id ?? application.application_id}`,
     blocks: workflowApprovalBlocks(job, application, template, text) as any,
   });
   if (!result.ok || !result.ts || !result.channel) throw new Error(`Slack workflow approval failed: ${result.error}`);

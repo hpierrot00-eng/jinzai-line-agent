@@ -625,7 +625,8 @@ async function upsertStudentFromSheet(row) {
         patch.external_student_id = row.externalStudentId;
     if (row.studentName) {
         patch.name = row.studentName;
-        patch.display_name = row.lineDisplayName ?? row.studentName;
+        if (!existing?.display_name)
+            patch.display_name = row.lineDisplayName ?? row.studentName;
     }
     if (row.studentFurigana)
         patch.furigana = row.studentFurigana;
