@@ -125,6 +125,13 @@ export function renderWorkflowTemplate(body, values) {
         return value === undefined || value === null ? '' : String(value);
     });
 }
+function shouldRefreshRenderedText(job, template) {
+    const renderedText = job.rendered_text ?? '';
+    return !renderedText
+        || Number(job.template_version ?? 0) < template.version
+        || renderedText.includes('\\n')
+        || renderedText.includes(':relaxed:');
+}
 export function classifyWorkflowReply(text) {
     const normalized = text.replace(/\s+/g, '').toLowerCase();
     if (/回答しました|回答済|入力しました|入力済|送信しました|提出しました|フォーム.*(回答|入力|送信|提出)/.test(normalized)) {
@@ -541,7 +548,9 @@ export async function getWorkflowApprovalDraft(jobId) {
     if (!application)
         throw new Error('Missing referral application for workflow job');
     const template = await getWorkflowTemplate(job.template_key);
-    const text = job.approved_text ?? job.rendered_text ?? renderWorkflowTemplate(template.body, { ...templateValues(application), ...(job.metadata ?? {}) });
+    const text = job.approved_text
+        ?? (shouldRefreshRenderedText(job, template) ? null : job.rendered_text)
+        ?? renderWorkflowTemplate(template.body, { ...templateValues(application), ...(job.metadata ?? {}) });
     return { job, application, template, text };
 }
 export async function approveWorkflowJob(input) {
