@@ -65,6 +65,7 @@ Optional:
 - `ADMIN_API_KEY`
 - `LINE_HARNESS_TAG_SYNC_ENABLED` / `LINE_HARNESS_TAG_SYNC_URL` for optional LINE Harness tag mirroring
 - `LINE_SEND_DRY_RUN=true` to record planned LINE sends without sending
+- `LINE_MARK_AS_READ_ENABLED=true` to mark the triggering LINE user message as read after a successful reply when the inbound webhook includes `message.markAsReadToken`
 - `CUSTOMER_SHEET_SPREADSHEET_ID=1-f4cXz1hdN0GCljxgXP88dQpAzYlsGa27TNxPWqTRKI`
 - `CUSTOMER_SHEET_TAB_NAME=顧客管理シート`
 - `CUSTOMER_SHEET_HEADER_ROW=3` when the customer sheet has memo/title rows above the actual header row
@@ -386,12 +387,13 @@ Supported normalized payload:
   "lineUserId": "Uxxxx",
   "displayName": "山田太郎",
   "text": "日程はいつですか？",
+  "markAsReadToken": "optional-line-read-token",
   "messageType": "text",
   "rawPayload": {}
 }
 ```
 
-The endpoint also accepts native LINE webhook `events` format.
+The endpoint also accepts native LINE webhook `events` format. If LINE Harness forwards the native `message.markAsReadToken`, the app stores it on the incoming message and performs a best-effort `POST https://api.line.me/v2/bot/chat/markAsRead` after a successful Slack-approved or low-risk auto reply. This requires `LINE_CHANNEL_ACCESS_TOKEN`; failures to mark as read are logged as warnings and do not turn a successful LINE send into a failed send.
 
 ## Run
 

@@ -37,6 +37,7 @@ const envSchema = z.object({
   LINE_HARNESS_TAG_SYNC_ENABLED: boolFromEnv.default(false),
   LINE_HARNESS_TAG_SYNC_URL: z.string().optional().default(''),
   LINE_SEND_DRY_RUN: boolFromEnv.default(false),
+  LINE_MARK_AS_READ_ENABLED: boolFromEnv.default(true),
   LINE_CHANNEL_ACCESS_TOKEN: z.string().optional().default(''),
   LINE_CHANNEL_SECRET: z.string().optional().default(''),
   GOOGLE_SHEETS_SPREADSHEET_ID: z.string().optional().default(''),

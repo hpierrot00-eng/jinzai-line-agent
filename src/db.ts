@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
+import { extractMarkAsReadToken } from './line.js';
 import type { DraftResult, InboundLineMessage, KnowledgeItem, MessageTemplate, MonthlyRule } from './types.js';
 
 export const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
@@ -51,6 +52,7 @@ export async function getOrCreateConversation(studentId: string) {
 }
 
 export async function saveIncomingMessage(input: InboundLineMessage, studentId: string, conversationId: string) {
+  const rawPayload = normalizeIncomingRawPayload(input);
   const { data, error } = await supabase
     .from('messages')
     .insert({
@@ -63,7 +65,7 @@ export async function saveIncomingMessage(input: InboundLineMessage, studentId: 
       sender_id: input.lineUserId,
       content: input.text,
       message_type: input.messageType ?? 'text',
-      raw_payload: input.rawPayload ?? {},
+      raw_payload: rawPayload,
     })
     .select('*')
     .single();
@@ -71,6 +73,36 @@ export async function saveIncomingMessage(input: InboundLineMessage, studentId: 
 
   await supabase.from('conversations').update({ last_message_at: new Date().toISOString(), status: 'waiting_approval', updated_at: new Date().toISOString() }).eq('id', conversationId);
   return data;
+}
+
+function normalizeIncomingRawPayload(input: InboundLineMessage) {
+  if (!input.markAsReadToken) return input.rawPayload ?? {};
+  const raw = input.rawPayload;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return { ...(raw as Record<string, unknown>), markAsReadToken: input.markAsReadToken };
+  }
+  return { rawPayload: raw ?? null, markAsReadToken: input.markAsReadToken };
+}
+
+export async function getMessageMarkAsReadToken(messageId?: string | null) {
+  if (!messageId) return null;
+  const { data, error } = await supabase
+    .from('messages')
+    .select('raw_payload')
+    .eq('id', messageId)
+    .maybeSingle();
+  if (error) throw error;
+  return extractMarkAsReadToken(data?.raw_payload);
+}
+
+export async function getReplyDraftMarkAsReadToken(replyDraftId: string) {
+  const { data, error } = await supabase
+    .from('reply_drafts')
+    .select('trigger_message_id')
+    .eq('id', replyDraftId)
+    .maybeSingle();
+  if (error) throw error;
+  return getMessageMarkAsReadToken(data?.trigger_message_id);
 }
 
 export async function getRecentMessages(conversationId: string) {

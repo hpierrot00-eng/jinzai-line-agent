@@ -2,8 +2,8 @@ import crypto from 'node:crypto';
 import { WebClient } from '@slack/web-api';
 import { config } from './config.js';
 import { generateRevisionDraft } from './ai.js';
-import { findRelevantKnowledge, getDraftWithContext, getMonthlyRulesForReply, getRecentMessages, markDraftSendFailed, recordApprovalAction, recordDeliveryAttempt, recordOutgoingAndApproval, saveDraft, saveSlackReview, supabase } from './db.js';
-import { sendLineMessage } from './line.js';
+import { findRelevantKnowledge, getDraftWithContext, getMonthlyRulesForReply, getRecentMessages, getReplyDraftMarkAsReadToken, markDraftSendFailed, recordApprovalAction, recordDeliveryAttempt, recordOutgoingAndApproval, saveDraft, saveSlackReview, supabase } from './db.js';
+import { markLineMessageAsRead, sendLineMessage } from './line.js';
 import { approveWorkflowJob, getWorkflowApprovalDraft, selectWorkflowApplication, type WorkflowIntent } from './workflow.js';
 import { confirmLineIdentityLink } from './sheets.js';
 import type { InboundLineMessage } from './types.js';
@@ -34,8 +34,11 @@ export function verifySlackSignature(rawBody: Buffer, timestamp?: string, signat
 async function sendApprovedReply(input: { replyDraftId: string; action: string; userId: string; text: string }) {
   const draft = await getDraftWithContext(input.replyDraftId);
   const student = draft.conversations.students;
+  let providerResponse: unknown;
+  let markAsReadResult: unknown;
   try {
-    await sendLineMessage(student.line_user_id, input.text);
+    providerResponse = await sendLineMessage(student.line_user_id, input.text);
+    markAsReadResult = await markReplyDraftTriggerAsRead(input.replyDraftId);
   } catch (err) {
     const message = errorMessage(err);
     await recordDeliveryAttempt({ replyDraftId: input.replyDraftId, lineUserId: student.line_user_id, text: input.text, status: 'failed', errorMessage: message, attemptedBySlackUserId: input.userId, action: input.action });
@@ -44,13 +47,36 @@ async function sendApprovedReply(input: { replyDraftId: string; action: string; 
     return { ok: false as const, draft, student, error: message };
   }
 
+  const readWarning = markAsReadWarning(markAsReadResult);
   try {
-    await recordDeliveryAttempt({ replyDraftId: input.replyDraftId, lineUserId: student.line_user_id, text: input.text, status: 'success', attemptedBySlackUserId: input.userId, action: input.action });
+    await recordDeliveryAttempt({ replyDraftId: input.replyDraftId, lineUserId: student.line_user_id, text: input.text, status: 'success', providerResponse: { lineSend: providerResponse, markAsRead: markAsReadResult }, attemptedBySlackUserId: input.userId, action: input.action });
     await recordOutgoingAndApproval(input.replyDraftId, input.action, input.userId, input.text);
-    return { ok: true as const, draft, student };
+    return readWarning ? { ok: true as const, draft, student, warning: readWarning } : { ok: true as const, draft, student };
   } catch (err) {
-    return { ok: true as const, draft, student, warning: `LINE送信は成功しましたが、DBログ保存に失敗しました: ${errorMessage(err)}` };
+    const warning = [readWarning, `LINE送信は成功しましたが、DBログ保存に失敗しました: ${errorMessage(err)}`].filter(Boolean).join('\n');
+    return { ok: true as const, draft, student, warning };
   }
+}
+
+async function markReplyDraftTriggerAsRead(replyDraftId: string) {
+  try {
+    const token = await getReplyDraftMarkAsReadToken(replyDraftId);
+    return await markLineMessageAsRead(token);
+  } catch (err) {
+    const message = errorMessage(err);
+    console.warn('LINE mark-as-read skipped:', message);
+    return { ok: false, error: message };
+  }
+}
+
+function markAsReadWarning(result: unknown) {
+  const value = result as { ok?: boolean; dryRun?: boolean; skipped?: boolean; reason?: string; error?: string } | null | undefined;
+  if (!value || value.ok || value.dryRun) return '';
+  if (value.skipped && value.reason === 'missing_mark_as_read_token') return 'LINE送信は成功しましたが、Webhookに既読トークンが無かったため既読化はスキップしました。';
+  if (value.skipped && value.reason === 'missing_line_channel_access_token') return 'LINE送信は成功しましたが、LINE_CHANNEL_ACCESS_TOKEN が無いため既読化はスキップしました。';
+  if (value.skipped && value.reason === 'line_mark_as_read_disabled') return '';
+  if (value.error) return `LINE送信は成功しましたが、既読化に失敗しました: ${value.error}`;
+  return '';
 }
 
 function truncateText(value: unknown, max = 650) {
@@ -94,11 +120,12 @@ function formatApplicationLabel(application: any) {
   return `${application.application_id ?? application.id} / ${application.agent_name ?? 'エージェント未設定'} / ${scheduled}`;
 }
 
-function workflowSelectionValue(application: any, intent: WorkflowIntent, eventText: string) {
+function workflowSelectionValue(application: any, intent: WorkflowIntent, eventText: string, incomingMessageId?: string) {
   return JSON.stringify({
     applicationRefId: application.id,
     intent,
     eventText: String(eventText ?? '').slice(0, 900),
+    incomingMessageId,
   });
 }
 
@@ -176,7 +203,7 @@ export async function postWorkflowNotification(workflow: any, event: InboundLine
       type: 'button',
       text: { type: 'plain_text', text: `候補${index + 1}で処理` },
       action_id: 'workflow_select_application',
-      value: workflowSelectionValue(application, workflow.classification.intent, event.text),
+      value: workflowSelectionValue(application, workflow.classification.intent, event.text, workflow.incomingMessageId),
     }));
 
     const blocks: any[] = [
@@ -319,6 +346,7 @@ export async function handleSlackInteraction(payload: any) {
       applicationRefId: selection.applicationRefId,
       intent: selection.intent,
       eventText: selection.eventText ?? '',
+      incomingMessageId: selection.incomingMessageId,
     });
     await slack.chat.update({
       channel: payload.channel.id,

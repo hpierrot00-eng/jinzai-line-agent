@@ -44,12 +44,13 @@ async function processInbound(body) {
         try {
             const workflow = await processWorkflowReply({ student, event: eventWithProfile, dryRun });
             if (workflow.handled) {
-                const slackMessage = await postWorkflowNotification(workflow, eventWithProfile, student);
+                const workflowForSlack = { ...workflow, incomingMessageId: incoming.id };
+                const slackMessage = await postWorkflowNotification(workflowForSlack, eventWithProfile, student);
                 results.push({
                     studentId: student.id,
                     conversationId: conversation.id,
                     messageId: incoming.id,
-                    workflow,
+                    workflow: workflowForSlack,
                     slackTs: slackMessage?.ts,
                 });
                 continue;

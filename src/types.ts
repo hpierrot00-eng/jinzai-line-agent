@@ -13,6 +13,7 @@ export type InboundLineMessage = {
   lineUserId: string;
   displayName?: string;
   text: string;
+  markAsReadToken?: string;
   rawPayload?: unknown;
   messageType?: string;
 };

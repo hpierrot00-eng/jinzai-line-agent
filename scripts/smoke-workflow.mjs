@@ -16,6 +16,7 @@ process.env.POST_FORM_DELAY_HOURS ||= '2';
 
 const sheets = await import('../dist/sheets.js');
 const workflow = await import('../dist/workflow.js');
+const line = await import('../dist/line.js');
 
 const row = sheets.normalizeSheetRowForSmoke({
   顧客ID: 'app-001',
@@ -75,7 +76,7 @@ const nameCandidates = sheets.extractStudentNameCandidates('山田太郎です�
 if (!nameCandidates.includes('山田太郎')) throw new Error('student name extraction failed');
 
 const identity = await sheets.findLineIdentityCandidates({
-  event: { lineUserId: 'Unew001', displayName: '山田太郎', text: '山田太郎です。確認しました' },
+  event: { lineUserId: 'Unew001', displayName: '山田太郎', text: '山田太郎です。確認しました', markAsReadToken: 'read-token-001' },
   rows: [
     { __rowNumber: 2, 顧客ID: 'app-a', 名前: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
     { __rowNumber: 3, 顧客ID: 'app-b', 名前: '山田太郎', フリガナ: 'ヤマダタロウ', LINE名: '山田太郎' },
@@ -84,6 +85,25 @@ const identity = await sheets.findLineIdentityCandidates({
 });
 if (identity.status !== 'unique') throw new Error(`identity match should be unique: ${identity.status}`);
 if (identity.candidates[0].applicationIds.length !== 2) throw new Error('identity match should include all same-student application rows');
+
+const nativeLineEvents = line.extractLineEvents({
+  events: [{
+    type: 'message',
+    source: { userId: 'Uread001' },
+    message: { type: 'text', text: '確認できました', markAsReadToken: 'read-token-002' },
+  }],
+});
+if (nativeLineEvents[0]?.markAsReadToken !== 'read-token-002') throw new Error('native LINE markAsReadToken extraction failed');
+
+const normalizedLineEvents = line.extractLineEvents({
+  lineUserId: 'Uread002',
+  text: '回答しました',
+  rawPayload: { message: { markAsReadToken: 'read-token-003' } },
+});
+if (normalizedLineEvents[0]?.markAsReadToken !== 'read-token-003') throw new Error('normalized markAsReadToken extraction failed');
+
+const markReadDryRun = await line.markLineMessageAsRead('read-token-004');
+if (!markReadDryRun.dryRun) throw new Error('mark-as-read should respect LINE_SEND_DRY_RUN in smoke');
 
 const postResponseMatch = sheets.matchPostParticipationResponseForSmoke(
   { 名前: '山田太郎', フリガナ: 'ヤマダタロウ', 案件名称: 'Vire', 参加日: '2026-05-20' },

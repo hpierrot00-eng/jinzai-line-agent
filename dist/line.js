@@ -8,13 +8,55 @@ export function verifyLineSignature(rawBody, signature) {
     const expectedBuffer = Buffer.from(expected);
     return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
 }
+function asRecord(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return null;
+    return value;
+}
+function stringValue(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+export function extractMarkAsReadToken(payload) {
+    const root = asRecord(payload);
+    if (!root)
+        return null;
+    const direct = stringValue(root.markAsReadToken)
+        ?? stringValue(root.mark_as_read_token)
+        ?? stringValue(root.readToken)
+        ?? stringValue(root.read_token);
+    if (direct)
+        return direct;
+    const message = asRecord(root.message);
+    const messageToken = stringValue(message?.markAsReadToken)
+        ?? stringValue(message?.mark_as_read_token)
+        ?? stringValue(message?.readToken)
+        ?? stringValue(message?.read_token);
+    if (messageToken)
+        return messageToken;
+    const rawPayloadToken = extractMarkAsReadToken(root.rawPayload);
+    if (rawPayloadToken)
+        return rawPayloadToken;
+    const event = asRecord(root.event);
+    const eventToken = extractMarkAsReadToken(event);
+    if (eventToken)
+        return eventToken;
+    const events = Array.isArray(root.events) ? root.events : [];
+    for (const item of events) {
+        const token = extractMarkAsReadToken(item);
+        if (token)
+            return token;
+    }
+    return null;
+}
 export function extractLineEvents(body) {
     if (body?.lineUserId && body?.text) {
+        const rawPayload = body.rawPayload ?? body;
         return [{
                 lineUserId: body.lineUserId,
                 displayName: body.displayName ?? body.lineDisplayName ?? body.name ?? body.profile?.displayName,
                 text: body.text,
-                rawPayload: body,
+                markAsReadToken: extractMarkAsReadToken(body) ?? undefined,
+                rawPayload,
                 messageType: body.messageType ?? 'text',
             }];
     }
@@ -25,6 +67,7 @@ export function extractLineEvents(body) {
         lineUserId: event.source.userId,
         displayName: event.source?.displayName ?? event.profile?.displayName,
         text: event.message.text,
+        markAsReadToken: extractMarkAsReadToken(event) ?? undefined,
         rawPayload: event,
         messageType: event.message.type,
     }));
@@ -120,6 +163,27 @@ async function sendViaLineHarnessApi(baseUrl, lineUserId, text) {
     });
     if (!res.ok)
         throw new Error(`LINE Harness send failed: ${await responseText(res)}`);
+}
+export async function markLineMessageAsRead(markAsReadToken) {
+    if (!markAsReadToken)
+        return { skipped: true, reason: 'missing_mark_as_read_token' };
+    if (!config.LINE_MARK_AS_READ_ENABLED)
+        return { skipped: true, reason: 'line_mark_as_read_disabled' };
+    if (config.LINE_SEND_DRY_RUN)
+        return { dryRun: true };
+    if (!config.LINE_CHANNEL_ACCESS_TOKEN)
+        return { skipped: true, reason: 'missing_line_channel_access_token' };
+    const res = await fetch('https://api.line.me/v2/bot/chat/markAsRead', {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${config.LINE_CHANNEL_ACCESS_TOKEN}`,
+        },
+        body: JSON.stringify({ markAsReadToken }),
+    });
+    if (!res.ok)
+        throw new Error(`LINE mark-as-read failed: ${await responseText(res)}`);
+    return { ok: true };
 }
 export async function syncLineHarnessTags(lineUserId, tags) {
     if (!config.LINE_HARNESS_TAG_SYNC_ENABLED || tags.length === 0 || !config.LINE_HARNESS_SEND_URL)

@@ -1,6 +1,6 @@
 import { config } from './config.js';
-import { sendLineMessage, syncLineHarnessTags } from './line.js';
-import { supabase } from './db.js';
+import { markLineMessageAsRead, sendLineMessage, syncLineHarnessTags } from './line.js';
+import { getMessageMarkAsReadToken, supabase } from './db.js';
 import { writeApplicationsToSheets } from './sheets.js';
 import { WebClient } from '@slack/web-api';
 export const WORKFLOW_STATUSES = [
@@ -269,7 +269,7 @@ async function recordOutgoing(application, text, action) {
     if (error)
         throw error;
 }
-async function sendWorkflowMessage(application, text, action, dryRun, template, attemptedBySlackUserId) {
+async function sendWorkflowMessage(application, text, action, dryRun, template, attemptedBySlackUserId, markAsReadToken) {
     if (!application.line_user_id)
         throw new Error(`Missing LINE user id for application ${application.application_id}`);
     if (dryRun) {
@@ -278,15 +278,26 @@ async function sendWorkflowMessage(application, text, action, dryRun, template, 
     }
     try {
         const providerResponse = await sendLineMessage(application.line_user_id, text);
-        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'success', action, providerResponse, templateKey: template?.key, templateVersion: template?.version, attemptedBySlackUserId });
+        const markAsRead = markAsReadToken ? await markWorkflowMessageAsRead(markAsReadToken) : undefined;
+        await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'success', action, providerResponse: { lineSend: providerResponse, markAsRead }, templateKey: template?.key, templateVersion: template?.version, attemptedBySlackUserId });
         await recordOutgoing(application, text, action);
-        return { dryRun: false };
+        return { dryRun: false, markAsRead };
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         await insertDeliveryAttempt({ applicationId: application.id, lineUserId: application.line_user_id, text, status: 'failed', errorMessage: message, action, templateKey: template?.key, templateVersion: template?.version, attemptedBySlackUserId });
         await setApplicationStatus(application, 'human_required', { error_message: message });
         throw err;
+    }
+}
+async function markWorkflowMessageAsRead(markAsReadToken) {
+    try {
+        return await markLineMessageAsRead(markAsReadToken);
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn('LINE workflow mark-as-read skipped:', message);
+        return { ok: false, error: message };
     }
 }
 async function getRegistrationState(studentId) {
@@ -627,7 +638,7 @@ export async function processWorkflowReplyForApplication(input) {
     if (input.intent === 'confirmation') {
         const template = await getWorkflowTemplate('confirm_ack_reply');
         const text = renderWorkflowTemplate(template.body, templateValues(application));
-        await sendWorkflowMessage(application, text, 'confirm_ack_reply', dryRun, { key: template.key, version: template.version });
+        await sendWorkflowMessage(application, text, 'confirm_ack_reply', dryRun, { key: template.key, version: template.version }, undefined, input.event.markAsReadToken);
         sentTexts.push(text);
         if (!dryRun)
             await setApplicationStatus(application, 'pre_caution_confirmed', { pre_caution_confirmed_at: nowIso(), last_line_sent_at: nowIso() });
@@ -635,7 +646,7 @@ export async function processWorkflowReplyForApplication(input) {
     if (input.intent === 'form_answered') {
         const template = await getWorkflowTemplate('answered_ack_reply');
         const text = renderWorkflowTemplate(template.body, templateValues(application));
-        await sendWorkflowMessage(application, text, 'answered_ack_reply', dryRun, { key: template.key, version: template.version });
+        await sendWorkflowMessage(application, text, 'answered_ack_reply', dryRun, { key: template.key, version: template.version }, undefined, input.event.markAsReadToken);
         sentTexts.push(text);
         const registration = await getRegistrationState(application.student_id);
         const bankFormAlreadySent = application.bank_form_sent_at || application.students?.bank_form_sent_at || registration?.bank_form_sent_at;
@@ -696,10 +707,17 @@ export async function selectWorkflowApplication(input) {
     if (error)
         throw error;
     const application = data;
+    let markAsReadToken = null;
+    try {
+        markAsReadToken = await getMessageMarkAsReadToken(input.incomingMessageId);
+    }
+    catch (err) {
+        console.warn('LINE workflow selection mark-as-read lookup skipped:', err instanceof Error ? err.message : err);
+    }
     return processWorkflowReplyForApplication({
         application,
         intent: input.intent,
-        event: { lineUserId: application.line_user_id ?? '', text: input.eventText, messageType: 'text' },
+        event: { lineUserId: application.line_user_id ?? '', text: input.eventText, messageType: 'text', markAsReadToken: markAsReadToken ?? undefined },
         dryRun: input.dryRun,
     });
 }
