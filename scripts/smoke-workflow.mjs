@@ -37,6 +37,16 @@ if (row.participationScheduledAt !== '2026-05-20T09:00:00.000Z') throw new Error
 if (row.autoSendEnabled !== true) throw new Error('auto-send boolean mapping failed');
 if (row.humanRequired !== false) throw new Error('human flag boolean mapping failed');
 
+const headerOffsetRows = sheets.rowsFromSheetValuesForSmoke([
+  ['顧客ID ', 'Line ユーザーID', '進捗状況', '名前', '（フリガナ）', 'LINE名', '予約日', '予約時間', '案件名称'],
+  ['A001', 'Uoffset001', 'interested', '小間響', 'コマヒビキ', 'ひびきん', '2026/05/20', '18:00', 'Vire'],
+], 3);
+const offsetRow = sheets.normalizeSheetRowForSmoke(headerOffsetRows[0]);
+if (headerOffsetRows[0].__rowNumber !== 4) throw new Error(`header-row offset should preserve sheet row number: ${headerOffsetRows[0].__rowNumber}`);
+if (offsetRow.applicationId !== 'A001') throw new Error('header-row offset application id mapping failed');
+if (offsetRow.lineUserId !== 'Uoffset001') throw new Error('Line user id alias mapping failed');
+if (offsetRow.studentFurigana !== 'コマヒビキ') throw new Error('furigana alias mapping failed');
+
 const scheduledAt = '2026-05-20T09:00:00.000Z';
 const jobs = workflow.planWorkflowJobsForSmoke(scheduledAt, row.applicationId);
 if (jobs.length !== 3) throw new Error('workflow job planning should create three jobs');

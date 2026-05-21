@@ -35,7 +35,7 @@ export type SheetsColumnKey = keyof typeof DEFAULT_SHEETS_COLUMN_MAP;
 export type SheetsColumnMap = Record<SheetsColumnKey, string>;
 
 type SheetRow = Record<string, unknown> & { __rowNumber?: number };
-type SheetSource = { spreadsheetId: string; tabName: string };
+type SheetSource = { spreadsheetId: string; tabName: string; headerRow?: number };
 
 type NormalizedSheetRow = ReturnType<typeof normalizeRow>;
 
@@ -72,6 +72,12 @@ const DEFAULT_BANK_ACCOUNT_RESPONSE_COLUMN_MAP = {
 type PostParticipationResponseColumnMap = typeof DEFAULT_POST_PARTICIPATION_RESPONSE_COLUMN_MAP;
 type BankAccountResponseColumnMap = typeof DEFAULT_BANK_ACCOUNT_RESPONSE_COLUMN_MAP;
 
+const SHEETS_HEADER_ALIASES: Record<string, string[]> = {
+  applicationId: ['申込ID', '顧客ID'],
+  lineUserId: ['Line ユーザーID', 'LINE ユーザーID', 'LINEユーザーID', 'ラインユーザーID'],
+  studentFurigana: ['（フリガナ）', 'フリガナ', 'ふりがな', 'カナ'],
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -95,18 +101,18 @@ function bankAccountResponseColumnMap(): BankAccountResponseColumnMap {
 }
 
 function mainSheetSource(): SheetSource {
-  return { spreadsheetId: config.GOOGLE_SHEETS_SPREADSHEET_ID, tabName: config.GOOGLE_SHEETS_TAB_NAME };
+  return { spreadsheetId: config.GOOGLE_SHEETS_SPREADSHEET_ID, tabName: config.GOOGLE_SHEETS_TAB_NAME, headerRow: config.GOOGLE_SHEETS_HEADER_ROW };
 }
 
 function responseSheetSource(kind: 'postParticipation' | 'bankAccount'): SheetSource | null {
   if (kind === 'postParticipation') {
     const spreadsheetId = config.POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID || config.GOOGLE_SHEETS_SPREADSHEET_ID;
     const tabName = config.POST_PARTICIPATION_RESPONSES_TAB_NAME;
-    return spreadsheetId && tabName ? { spreadsheetId, tabName } : null;
+    return spreadsheetId && tabName ? { spreadsheetId, tabName, headerRow: config.POST_PARTICIPATION_RESPONSES_HEADER_ROW } : null;
   }
   const spreadsheetId = config.BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID || config.GOOGLE_SHEETS_SPREADSHEET_ID;
   const tabName = config.BANK_ACCOUNT_RESPONSES_TAB_NAME;
-  return spreadsheetId && tabName ? { spreadsheetId, tabName } : null;
+  return spreadsheetId && tabName ? { spreadsheetId, tabName, headerRow: config.BANK_ACCOUNT_RESPONSES_HEADER_ROW } : null;
 }
 
 function value(row: SheetRow, map: SheetsColumnMap, key: SheetsColumnKey) {
@@ -227,17 +233,25 @@ function participationDateTime(row: SheetRow, map: SheetsColumnMap) {
   return parseDateTime(`${date ?? ''} ${time ?? '00:00'}`.trim());
 }
 
-function rowsFromValues(values: unknown[][]): SheetRow[] {
-  const [headerRow, ...bodyRows] = values;
-  if (!headerRow) return [];
-  const headers = headerRow.map((header) => String(header ?? '').trim());
+function headerRowNumber(source: SheetSource) {
+  return Math.max(1, Number(source.headerRow ?? 1));
+}
+
+function rowsFromValues(values: unknown[][], headerRow = 1): SheetRow[] {
+  const [headerValues, ...bodyRows] = values;
+  if (!headerValues) return [];
+  const headers = headerValues.map((header) => String(header ?? '').trim());
   return bodyRows.map((row, index) => {
-    const object: SheetRow = { __rowNumber: index + 2 };
+    const object: SheetRow = { __rowNumber: headerRow + index + 1 };
     headers.forEach((header, columnIndex) => {
       if (header) object[header] = row[columnIndex] ?? '';
     });
     return object;
   });
+}
+
+export function rowsFromSheetValuesForSmoke(values: unknown[][], headerRow = 1) {
+  return rowsFromValues(values, headerRow);
 }
 
 function normalizeIdentityText(value: string | null | undefined) {
@@ -335,9 +349,10 @@ async function googleSheetsFetch(path: string, init?: RequestInit, source: Sheet
 }
 
 async function readSheetRows(source: SheetSource = mainSheetSource()) {
-  const range = `${encodeURIComponent(source.tabName)}!A1:ZZ`;
+  const headerRow = headerRowNumber(source);
+  const range = `${encodeURIComponent(source.tabName)}!A${headerRow}:ZZ`;
   const json = await googleSheetsFetch(`/values/${range}?majorDimension=ROWS`, undefined, source) as any;
-  return rowsFromValues(json.values ?? []);
+  return rowsFromValues(json.values ?? [], headerRow);
 }
 
 function columnName(index: number) {
@@ -352,14 +367,19 @@ function columnName(index: number) {
 }
 
 async function headerIndexes(map: Record<string, string>, source: SheetSource = mainSheetSource()) {
-  const range = `${encodeURIComponent(source.tabName)}!A1:ZZ1`;
+  const headerRow = headerRowNumber(source);
+  const range = `${encodeURIComponent(source.tabName)}!A${headerRow}:ZZ${headerRow}`;
   const json = await googleSheetsFetch(`/values/${range}?majorDimension=ROWS`, undefined, source) as any;
   const headers = (json.values?.[0] ?? []).map((header: unknown) => String(header ?? '').trim());
   const indexes = new Map<string, number>();
-  Object.values(map).forEach((header) => {
+  Object.entries(map).forEach(([key, header]) => {
     if (!header) return;
-    const index = headers.indexOf(header);
-    if (index >= 0) indexes.set(header, index);
+    const candidates = [header, ...(SHEETS_HEADER_ALIASES[key] ?? [])].map((candidate) => candidate.trim());
+    const index = candidates.map((candidate) => headers.indexOf(candidate)).find((candidateIndex) => candidateIndex >= 0) ?? -1;
+    if (index >= 0) {
+      indexes.set(header, index);
+      indexes.set(headers[index], index);
+    }
   });
   return indexes;
 }
@@ -367,11 +387,11 @@ async function headerIndexes(map: Record<string, string>, source: SheetSource = 
 function normalizeRow(row: SheetRow, map: SheetsColumnMap) {
   return {
     rowNumber: row.__rowNumber,
-    applicationId: textValue(row, map, 'applicationId'),
+    applicationId: fallbackTextValue(row, map, 'applicationId', ['申込ID', '顧客ID']),
     externalStudentId: textValue(row, map, 'externalStudentId'),
-    lineUserId: textValue(row, map, 'lineUserId'),
+    lineUserId: fallbackTextValue(row, map, 'lineUserId', ['Line ユーザーID', 'LINE ユーザーID', 'LINEユーザーID', 'ラインユーザーID']),
     studentName: fallbackTextValue(row, map, 'studentName', ['名前', '氏名']),
-    studentFurigana: fallbackTextValue(row, map, 'studentFurigana', ['ふりがな', 'カナ']),
+    studentFurigana: fallbackTextValue(row, map, 'studentFurigana', ['（フリガナ）', 'フリガナ', 'ふりがな', 'カナ']),
     lineDisplayName: fallbackTextValue(row, map, 'lineDisplayName', ['LINE表示名', 'ライン名']),
     universityName: textValue(row, map, 'universityName'),
     graduationYear: textValue(row, map, 'graduationYear'),

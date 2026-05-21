@@ -67,7 +67,9 @@ Optional:
 - `LINE_SEND_DRY_RUN=true` to record planned LINE sends without sending
 - `CUSTOMER_SHEET_SPREADSHEET_ID=1-f4cXz1hdN0GCljxgXP88dQpAzYlsGa27TNxPWqTRKI`
 - `CUSTOMER_SHEET_TAB_NAME=顧客管理シート`
+- `CUSTOMER_SHEET_HEADER_ROW=3` when the customer sheet has memo/title rows above the actual header row
 - `GOOGLE_SHEETS_SPREADSHEET_ID` / `GOOGLE_SHEETS_TAB_NAME` as backward-compatible aliases
+- `GOOGLE_SHEETS_HEADER_ROW` as the backward-compatible alias for the customer sheet header row
 - `GOOGLE_SERVICE_ACCOUNT_EMAIL`
 - `GOOGLE_PRIVATE_KEY`
 - `SHEETS_COLUMN_MAP_JSON`
@@ -75,11 +77,15 @@ Optional:
 - `SHEETS_WRITE_DRY_RUN=true` to preview Sheets writeback without writing
 - `PARTICIPATION_FORM_SPREADSHEET_ID=1z721QOp_v5TPnmebQ4H6NPj6uFPuz_iZHl0sMo8t4c0`
 - `PARTICIPATION_FORM_TAB_NAME=フォームの回答 1`
+- `PARTICIPATION_FORM_HEADER_ROW=1`
 - `POST_PARTICIPATION_RESPONSES_SPREADSHEET_ID` / `POST_PARTICIPATION_RESPONSES_TAB_NAME` as backward-compatible aliases
+- `POST_PARTICIPATION_RESPONSES_HEADER_ROW` as the backward-compatible alias for the participation response sheet header row
 - `POST_PARTICIPATION_RESPONSE_COLUMN_MAP_JSON`
 - `BANK_FORM_SPREADSHEET_ID=1OjTGevowSpSQJH70ad4m_dBjHSJs2dMOUYaMWeHmi2Q`
 - `BANK_FORM_TAB_NAME=フォームの回答 1`
+- `BANK_FORM_HEADER_ROW=1`
 - `BANK_ACCOUNT_RESPONSES_SPREADSHEET_ID` / `BANK_ACCOUNT_RESPONSES_TAB_NAME` as backward-compatible aliases
+- `BANK_ACCOUNT_RESPONSES_HEADER_ROW` as the backward-compatible alias for the bank response sheet header row
 - `BANK_ACCOUNT_RESPONSE_COLUMN_MAP_JSON`
 - `POST_PARTICIPATION_FORM_URL`
 - `BANK_ACCOUNT_FORM_URL`
@@ -190,6 +196,14 @@ If the production sheet uses different headers, set `SHEETS_COLUMN_MAP_JSON`. On
 ```
 
 The built-in defaults treat `顧客ID` as `application_id`, `進捗状況` as the current status, `予約日 + 予約時間` as the participation datetime, and `案件名称` as the agent/project name. `自動送信対象` and `人間対応フラグ` are not required; auto-send eligibility is derived from status, LINE user ID, and reservation datetime.
+
+If the customer sheet has title or memo rows above the real header row, set `CUSTOMER_SHEET_HEADER_ROW` instead of deleting those rows. For the current production sheet layout, use:
+
+```env
+CUSTOMER_SHEET_HEADER_ROW=3
+```
+
+The default column reader also accepts common variants such as `申込ID` for `顧客ID`, `Line ユーザーID` for `LINEユーザーID`, and `（フリガナ）` for `フリガナ`. Use `SHEETS_COLUMN_MAP_JSON` when the sheet uses a different label.
 
 LINEユーザーIDは原則として手入力不要です。初回LINE受信時に `lineUserId`, `displayName`, `text` を使って Sheets の `名前` / `フリガナ` / `LINE名` を照合します。
 
