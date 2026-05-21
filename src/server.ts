@@ -167,7 +167,12 @@ app.post('/message-templates/:key/approve', async (req, res, next) => {
 app.post('/sheets/sync', async (req, res, next) => {
   try {
     if (!requireAdmin(req, res)) return;
-    const result = await syncSheetsToSupabase({ rows: req.body?.rows, dryRun: Boolean(req.body?.dryRun) });
+    const result = await syncSheetsToSupabase({
+      rows: req.body?.rows,
+      dryRun: Boolean(req.body?.dryRun),
+      offset: req.body?.offset,
+      limit: req.body?.limit,
+    });
     const applicationIds = result.results
       .map((item: any) => item.applicationRefId)
       .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);

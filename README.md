@@ -292,9 +292,10 @@ ADMIN_API_KEY=<same value as the web service>
 CRON_BASE_URL=https://jinzai-line-agent.onrender.com
 CRON_DRY_RUN=false
 WORKFLOW_TICK_LIMIT=20
+SHEETS_SYNC_BATCH_SIZE=50
 ```
 
-`cron:ops` runs Sheets sync, form-response sync, job rebuild, and workflow tick in that order. For split schedules, use `cron:sheets-sync`, `cron:sync-form-responses`, `cron:rebuild-jobs`, and `cron:workflow-tick`.
+`cron:ops` runs Sheets sync, form-response sync, job rebuild, and workflow tick in that order. The Sheets sync is batched with `SHEETS_SYNC_BATCH_SIZE` to avoid long request timeouts on large operator ledgers. For split schedules, use `cron:sheets-sync`, `cron:sync-form-responses`, `cron:rebuild-jobs`, and `cron:workflow-tick`.
 
 List valid statuses:
 

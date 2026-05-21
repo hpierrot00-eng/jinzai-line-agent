@@ -3,6 +3,7 @@ const adminKey = process.env.ADMIN_API_KEY;
 const dryRun = ['1', 'true', 'yes', 'on'].includes(String(process.env.CRON_DRY_RUN ?? 'false').toLowerCase());
 const task = process.argv[2] || process.env.CRON_TASK || 'ops';
 const limit = Number(process.env.WORKFLOW_TICK_LIMIT || '20');
+const sheetsBatchSize = Number(process.env.SHEETS_SYNC_BATCH_SIZE || '50');
 
 if (!adminKey) {
   console.error('ADMIN_API_KEY is required for Render cron jobs.');
@@ -36,7 +37,7 @@ async function adminRequest(path, body) {
 function compact(result) {
   const data = result.data ?? {};
   if (result.path === '/sheets/sync') {
-    return { path: result.path, ms: result.ms, dryRun: data.dryRun, rows: data.rows, jobsCreated: data.jobs?.jobs?.length ?? 0 };
+    return { path: result.path, ms: result.ms, dryRun: data.dryRun, rows: data.rows, totalRows: data.totalRows, offset: data.offset, jobsCreated: data.jobs?.jobs?.length ?? 0 };
   }
   if (result.path === '/sheets/sync-form-responses') {
     return {
@@ -56,8 +57,35 @@ function compact(result) {
   return { path: result.path, ms: result.ms };
 }
 
+async function syncSheetsInBatches() {
+  const startedAt = Date.now();
+  const results = [];
+  let offset = 0;
+  let totalRows = null;
+  let rows = 0;
+  let jobsCreated = 0;
+
+  while (totalRows === null || offset < totalRows) {
+    const result = await adminRequest('/sheets/sync', { dryRun, offset, limit: sheetsBatchSize });
+    results.push(result);
+    const data = result.data ?? {};
+    const batchRows = Number(data.rows ?? 0);
+    totalRows = Number(data.totalRows ?? offset + batchRows);
+    rows += batchRows;
+    jobsCreated += Number(data.jobs?.jobs?.length ?? 0);
+    if (batchRows === 0) break;
+    offset += batchRows;
+  }
+
+  return {
+    path: '/sheets/sync',
+    ms: Date.now() - startedAt,
+    data: { ok: true, dryRun, rows, totalRows, offset: 0, batches: results.length, jobs: { jobs: Array.from({ length: jobsCreated }) } },
+  };
+}
+
 const tasks = {
-  'sheets-sync': () => adminRequest('/sheets/sync', { dryRun }),
+  'sheets-sync': () => syncSheetsInBatches(),
   'sync-form-responses': () => adminRequest('/sheets/sync-form-responses', { dryRun, notifySlack: true }),
   'rebuild-jobs': () => adminRequest('/workflow/rebuild-jobs', { dryRun }),
   'workflow-tick': () => adminRequest('/workflow/tick', { dryRun, limit }),

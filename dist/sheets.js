@@ -653,7 +653,10 @@ async function upsertStudentFromSheet(row) {
 export async function syncSheetsToSupabase(input = {}) {
     const map = sheetsColumnMap();
     const sourceRows = input.rows ?? await readSheetRows();
-    const normalized = sourceRows.map((row) => normalizeRow(row, map));
+    const offset = Math.max(0, Number(input.offset ?? 0));
+    const limit = input.limit && Number(input.limit) > 0 ? Number(input.limit) : undefined;
+    const selectedRows = input.rows ? sourceRows : sourceRows.slice(offset, limit ? offset + limit : undefined);
+    const normalized = selectedRows.map((row) => normalizeRow(row, map));
     const results = [];
     for (const row of normalized) {
         if (!row.applicationId) {
@@ -700,7 +703,7 @@ export async function syncSheetsToSupabase(input = {}) {
             throw stateError;
         results.push({ ok: true, applicationId: row.applicationId, applicationRefId: application.id, studentId: student.id, rowNumber: row.rowNumber, lineUserLinked: Boolean(row.lineUserId ?? student.line_user_id) });
     }
-    return { ok: true, dryRun: Boolean(input.dryRun), rows: results.length, results };
+    return { ok: true, dryRun: Boolean(input.dryRun), rows: results.length, totalRows: sourceRows.length, offset, limit: limit ?? null, results };
 }
 function applicationToSheetValues(application, map) {
     const student = application.students ?? {};
