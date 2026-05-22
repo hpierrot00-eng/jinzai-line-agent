@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { generateRevisionDraft } from './ai.js';
 import { findRelevantKnowledge, getDraftWithContext, getMonthlyRulesForReply, getRecentMessages, getReplyDraftMarkAsReadToken, markDraftSendFailed, recordApprovalAction, recordDeliveryAttempt, recordOutgoingAndApproval, saveDraft, saveSlackReview, supabase } from './db.js';
 import { markLineMessageAsRead, sendLineMessage } from './line.js';
-import { approveWorkflowJob, getWorkflowApprovalDraft, selectWorkflowApplication, type WorkflowIntent } from './workflow.js';
+import { approveWorkflowJob, getWorkflowApprovalDraft, selectWorkflowApplication, workflowApprovalResultBlocks, type WorkflowIntent } from './workflow.js';
 import { confirmLineIdentityLink } from './sheets.js';
 import type { InboundLineMessage } from './types.js';
 
@@ -399,7 +399,7 @@ export async function handleSlackInteraction(payload: any) {
         channel: payload.channel.id,
         ts: payload.message.ts,
         text: result.dryRun ? 'ワークフローdry-run済み' : 'ワークフロー送信済み',
-        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `${result.dryRun ? '🧪 dry-runとして記録しました' : '✅ 参加前注意事項をLINE送信しました'}\n*template:*\n${result.template.key} v${result.template.version}\n*送信文:*\n${truncateText(result.text, 2800)}` } }],
+        blocks: workflowApprovalResultBlocks(result) as any,
       });
     } catch (err) {
       await slack.chat.update({
@@ -507,7 +507,7 @@ async function handleModalSubmission(payload: any) {
         channel: meta.channel,
         ts: meta.ts,
         text: result.dryRun ? '編集dry-run済み' : '編集送信済み',
-        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `${result.dryRun ? '🧪 編集後の文面をdry-runとして記録しました' : '✅ 編集後の参加前注意事項をLINE送信しました'}\n*template:*\n${result.template.key} v${result.template.version}\n*送信文:*\n${truncateText(text, 2800)}` } }],
+        blocks: workflowApprovalResultBlocks(result, true) as any,
       });
     } catch (err) {
       await slack.chat.update({

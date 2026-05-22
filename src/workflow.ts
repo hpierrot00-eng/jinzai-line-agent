@@ -557,19 +557,23 @@ function statusPatchForJob(job: WorkflowJob) {
   return { status: null, patch: { last_line_sent_at: sentAt } };
 }
 
-function applicationCustomerLabel(application: ReferralApplication) {
-  const displayName = application.students?.display_name ?? application.line_display_name ?? application.student_name ?? null;
+function applicationCustomerDetails(application: ReferralApplication) {
+  const lineDisplayName = application.line_display_name ?? application.students?.display_name ?? application.student_name ?? null;
+  const studentName = application.student_name ?? application.students?.display_name ?? null;
   const lineId = application.line_user_id ?? application.students?.line_user_id ?? null;
-  if (displayName && lineId) return `${displayName}\nLINE ID: ${lineId}`;
-  if (displayName) return displayName;
-  if (lineId) return `LINE ID: ${lineId}`;
-  return '不明';
+  return {
+    lineDisplayName,
+    studentName,
+    lineId,
+    recipientLabel: lineDisplayName ?? studentName ?? lineId ?? '不明',
+  };
 }
 
-function workflowApprovalBlocks(job: WorkflowJob, application: ReferralApplication, template: WorkflowTemplate, text: string) {
-  const scheduled = application.participation_scheduled_at
+function formatWorkflowSchedule(application: ReferralApplication) {
+  return application.participation_scheduled_at
     ? new Intl.DateTimeFormat('ja-JP', {
       timeZone: config.WORKFLOW_TIMEZONE,
+      year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
@@ -577,27 +581,111 @@ function workflowApprovalBlocks(job: WorkflowJob, application: ReferralApplicati
       hour12: false,
     }).format(new Date(application.participation_scheduled_at))
     : '日時未設定';
+}
+
+function workflowJobTypeLabel(jobType: string) {
+  if (jobType === 'pre_participation_caution') return '参加前注意事項';
+  if (jobType === 'same_day_participation_reminder') return '当日リマインド';
+  if (jobType === 'post_participation_form') return '参加後フォーム案内';
+  if (jobType === 'bank_account_form') return 'TS/銀行口座フォーム案内';
+  return jobType;
+}
+
+function isDryRunApplication(application: ReferralApplication) {
+  const values = [
+    application.application_id,
+    application.line_user_id,
+    application.student_name,
+    application.line_display_name,
+    application.agent_name,
+    application.students?.display_name,
+    application.students?.line_user_id,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return values.includes('codex-dryrun') || values.includes('codex dryrun') || values.includes('ucodexdryrun');
+}
+
+function workflowApprovalBlocks(job: WorkflowJob, application: ReferralApplication, template: WorkflowTemplate, text: string) {
+  const scheduled = formatWorkflowSchedule(application);
+  const customer = applicationCustomerDetails(application);
+  const lineSummary = [
+    `*表示名:* ${customer.lineDisplayName ?? '未取得'}`,
+    `*LINE ID:* ${customer.lineId ?? '未取得'}`,
+    `*学生名:* ${customer.studentName ?? '未設定'}`,
+  ].join('\n');
+  const applicationSummary = [
+    `*申込ID:* ${application.application_id}`,
+    `*案件:* ${application.agent_name ?? '案件未設定'}`,
+    `*参加予定:* ${scheduled}`,
+  ].join('\n');
   return [
-    { type: 'header', text: { type: 'plain_text', text: '参加前注意事項 承認待ち', emoji: true } },
+    { type: 'header', text: { type: 'plain_text', text: 'LINE送信前の確認', emoji: true } },
+    { type: 'section', text: { type: 'mrkdwn', text: `*${workflowJobTypeLabel(job.job_type)}の承認待ちです*\n承認すると、下の文面をこのLINEユーザーへ送信します。` } },
     { type: 'section', fields: [
-      { type: 'mrkdwn', text: `*顧客:*\n${applicationCustomerLabel(application)}` },
-      { type: 'mrkdwn', text: `*申込:*\n${application.application_id} / ${application.agent_name ?? '案件未設定'} / ${scheduled}` },
-      { type: 'mrkdwn', text: `*template:*\n${template.key} v${template.version}` },
-      { type: 'mrkdwn', text: `*send_mode:*\n${template.sendMode}` },
+      { type: 'mrkdwn', text: `*送信先（LINE）*\n${lineSummary}` },
+      { type: 'mrkdwn', text: `*対象申込*\n${applicationSummary}` },
     ] },
-    { type: 'section', text: { type: 'mrkdwn', text: `*送信予定文面:*\n${text.slice(0, 2900)}` } },
+    { type: 'section', fields: [
+      { type: 'mrkdwn', text: `*テンプレート*\n${template.key} v${template.version}` },
+      { type: 'mrkdwn', text: `*送信方式*\n${template.sendMode === 'approval_required' ? 'Slack承認後に送信' : template.sendMode}` },
+    ] },
+    { type: 'context', elements: [
+      { type: 'mrkdwn', text: '迷ったら「送らず人間対応」を押してください。編集したい場合は「文面を編集して送信」から直せます。' },
+    ] },
+    { type: 'divider' },
+    { type: 'section', text: { type: 'mrkdwn', text: `*LINEに送る文面（承認後に送信）*\n${text.slice(0, 2800)}` } },
+    { type: 'divider' },
     { type: 'actions', elements: [
-      { type: 'button', text: { type: 'plain_text', text: '承認して送信' }, style: 'primary', action_id: 'workflow_approve_send', value: job.id },
-      { type: 'button', text: { type: 'plain_text', text: '編集して送信' }, action_id: 'workflow_edit_send', value: job.id },
-      { type: 'button', text: { type: 'plain_text', text: '人間対応' }, action_id: 'workflow_escalate', value: job.id },
+      { type: 'button', text: { type: 'plain_text', text: 'このLINEに送信' }, style: 'primary', action_id: 'workflow_approve_send', value: job.id },
+      { type: 'button', text: { type: 'plain_text', text: '文面を編集して送信' }, action_id: 'workflow_edit_send', value: job.id },
+      { type: 'button', text: { type: 'plain_text', text: '送らず人間対応' }, action_id: 'workflow_escalate', value: job.id },
     ] },
   ];
+}
+
+function workflowApprovalFallbackText(application: ReferralApplication) {
+  const customer = applicationCustomerDetails(application);
+  return [
+    'LINE送信承認待ち',
+    customer.recipientLabel,
+    application.application_id,
+    application.agent_name ?? '案件未設定',
+    formatWorkflowSchedule(application),
+  ].join(' / ');
+}
+
+function workflowSentSummary(application: ReferralApplication, template: WorkflowTemplate, text: string, dryRun: boolean) {
+  const customer = applicationCustomerDetails(application);
+  const status = dryRun ? '🧪 dry-runとして記録しました' : '✅ LINE送信済み';
+  return [
+    status,
+    `*送信先（LINE）:*\n${customer.lineDisplayName ?? customer.studentName ?? '未取得'}\nLINE ID: ${customer.lineId ?? '未取得'}`,
+    `*対象申込:*\n${application.application_id} / ${application.agent_name ?? '案件未設定'} / ${formatWorkflowSchedule(application)}`,
+    `*template:*\n${template.key} v${template.version}`,
+    `*送信文:*\n${text.slice(0, 2800)}`,
+  ].join('\n\n');
+}
+
+export function workflowApprovalResultBlocks(result: { application: ReferralApplication; template: WorkflowTemplate; text: string; dryRun: boolean }, edited = false) {
+  const prefix = edited && !result.dryRun ? '✅ 編集後の文面をLINE送信しました' : null;
+  const summary = workflowSentSummary(result.application, result.template, result.text, result.dryRun);
+  return [{ type: 'section', text: { type: 'mrkdwn', text: prefix ? summary.replace('✅ LINE送信済み', prefix) : summary } }];
+}
+
+async function rejectDryRunApplicationJob(job: WorkflowJob, application: ReferralApplication) {
+  await markJob(job.id, {
+    status: 'skipped',
+    error_message: 'Skipped test/dry-run application',
+  });
+}
+
+function dryRunApplicationError(application: ReferralApplication) {
+  return `テスト/dry-run用の申込のためLINE送信を停止しました: ${application.application_id}`;
 }
 
 async function postWorkflowApprovalCard(job: WorkflowJob, application: ReferralApplication, template: WorkflowTemplate, text: string) {
   const result = await workflowSlack.chat.postMessage({
     channel: config.SLACK_APPROVAL_CHANNEL_ID,
-    text: `参加前注意事項 承認待ち: ${application.students?.display_name ?? application.line_display_name ?? application.student_name ?? application.line_user_id ?? application.application_id}`,
+    text: workflowApprovalFallbackText(application),
     blocks: workflowApprovalBlocks(job, application, template, text) as any,
   });
   if (!result.ok || !result.ts || !result.channel) throw new Error(`Slack workflow approval failed: ${result.error}`);
@@ -634,6 +722,10 @@ export async function approveWorkflowJob(input: { jobId: string; userId: string;
   const { job, application, template, text: currentText } = await getWorkflowApprovalDraft(input.jobId);
   const text = input.text ?? currentText;
   const dryRun = input.dryRun ?? config.LINE_SEND_DRY_RUN;
+  if (isDryRunApplication(application)) {
+    await rejectDryRunApplicationJob(job, application);
+    throw new Error(dryRunApplicationError(application));
+  }
   if (!application.line_user_id) throw new Error(`Missing LINE user id for application ${application.application_id}`);
 
   await markJob(job.id, {
@@ -674,6 +766,11 @@ export async function runWorkflowTick(input: { limit?: number; dryRun?: boolean 
     if (!application?.line_user_id) {
       if (!dryRun) await markJob(job.id, { status: 'failed', error_message: 'Missing application or LINE user id' });
       results.push({ id: job.id, ok: false, dryRun, error: 'Missing application or LINE user id' });
+      continue;
+    }
+    if (isDryRunApplication(application)) {
+      if (!dryRun) await rejectDryRunApplicationJob(job, application);
+      results.push({ id: job.id, ok: true, skipped: true, dryRun, applicationId: application.application_id, jobType: job.job_type, reason: 'test/dry-run application' });
       continue;
     }
 
