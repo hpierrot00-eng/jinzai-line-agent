@@ -96,6 +96,23 @@ const STATUS_TO_TAG = {
     payment_ready: '支払い準備完了',
     human_required: '要人間対応',
 };
+const PRE_CAUTION_STUDENT_COVERED_STATUSES = [
+    'pre_caution_sent',
+    'pre_caution_confirmation_waiting',
+    'pre_caution_confirmed',
+    'same_day_reminder_sent',
+    'post_participation_form_waiting',
+    'bank_form_send_pending',
+    'bank_account_waiting',
+    'payment_ready',
+];
+const PRE_CAUTION_ACTIVE_JOB_STATUSES = [
+    'scheduled',
+    'approval_pending',
+    'processing',
+    'sent',
+    'approval_dry_run',
+];
 function nowIso() {
     return new Date().toISOString();
 }
@@ -327,6 +344,54 @@ async function getRegistrationState(studentId) {
         return null;
     throw error;
 }
+async function studentIdsWithActivePreCautionJobs(studentIds) {
+    if (studentIds.length === 0)
+        return new Set();
+    const { data, error } = await supabase
+        .from('workflow_jobs')
+        .select('student_id')
+        .eq('client_id', config.DEFAULT_CLIENT_ID)
+        .eq('job_type', 'pre_participation_caution')
+        .in('student_id', studentIds)
+        .in('status', PRE_CAUTION_ACTIVE_JOB_STATUSES);
+    if (error)
+        throw error;
+    return new Set((data ?? []).map((row) => row.student_id).filter(Boolean));
+}
+async function shouldSkipDuplicatePreCautionJob(job) {
+    if (job.job_type !== 'pre_participation_caution')
+        return false;
+    const { data: coveredApplications, error: applicationError } = await supabase
+        .from('referral_applications')
+        .select('id,current_status')
+        .eq('client_id', config.DEFAULT_CLIENT_ID)
+        .eq('student_id', job.student_id)
+        .in('current_status', PRE_CAUTION_STUDENT_COVERED_STATUSES)
+        .limit(1);
+    if (applicationError)
+        throw applicationError;
+    if ((coveredApplications ?? []).length > 0)
+        return true;
+    const { data: activeJobs, error: jobError } = await supabase
+        .from('workflow_jobs')
+        .select('id,due_at,status,created_at')
+        .eq('client_id', config.DEFAULT_CLIENT_ID)
+        .eq('student_id', job.student_id)
+        .eq('job_type', 'pre_participation_caution')
+        .in('status', PRE_CAUTION_ACTIVE_JOB_STATUSES)
+        .order('due_at', { ascending: true })
+        .order('created_at', { ascending: true })
+        .limit(20);
+    if (jobError)
+        throw jobError;
+    const otherActiveJob = (activeJobs ?? []).find((activeJob) => (activeJob.id !== job.id && activeJob.status !== 'scheduled'));
+    if (otherActiveJob)
+        return true;
+    if (job.status && job.status !== 'scheduled')
+        return false;
+    const firstScheduledJob = (activeJobs ?? []).find((activeJob) => activeJob.status === 'scheduled');
+    return Boolean(firstScheduledJob && firstScheduledJob.id !== job.id);
+}
 async function upsertRegistrationState(studentId, patch) {
     const payload = {
         client_id: config.DEFAULT_CLIENT_ID,
@@ -388,26 +453,35 @@ export async function rebuildWorkflowJobs(input = {}) {
     const { data, error } = await query;
     if (error)
         throw error;
+    const applications = (data ?? []);
+    const studentIds = [...new Set(applications.map((application) => application.student_id).filter(Boolean))];
+    const preCautionCoveredStudentIds = await studentIdsWithActivePreCautionJobs(studentIds);
+    for (const application of applications) {
+        if (PRE_CAUTION_STUDENT_COVERED_STATUSES.includes(application.current_status)) {
+            preCautionCoveredStudentIds.add(application.student_id);
+        }
+    }
     const jobs = [];
     const missingLineUser = [];
     const now = new Date();
-    for (const application of (data ?? [])) {
+    for (const application of applications) {
         if (!application.line_user_id) {
             missingLineUser.push({ applicationId: application.application_id, applicationRefId: application.id, studentId: application.student_id });
             continue;
         }
         const reminderDueAt = addHours(application.participation_scheduled_at, -config.SAME_DAY_REMINDER_OFFSET_HOURS);
         const postFormDueAt = addHours(application.participation_scheduled_at, config.POST_FORM_DELAY_HOURS);
-        if (new Date(application.participation_scheduled_at) > now && !['pre_caution_sent', 'pre_caution_confirmation_waiting', 'pre_caution_confirmed', 'same_day_reminder_sent', 'post_participation_form_waiting', 'payment_ready'].includes(application.current_status)) {
+        if (new Date(application.participation_scheduled_at) > now && !preCautionCoveredStudentIds.has(application.student_id)) {
             jobs.push({
                 application_id: application.id,
                 student_id: application.student_id,
                 job_type: 'pre_participation_caution',
                 template_key: 'pre_participation_caution',
                 due_at: nowIso(),
-                idempotency_key: `${application.id}:pre_participation_caution`,
+                idempotency_key: `${application.student_id}:pre_participation_caution`,
                 metadata: templateValues(application),
             });
+            preCautionCoveredStudentIds.add(application.student_id);
         }
         if (new Date(reminderDueAt) > now) {
             jobs.push({
@@ -526,31 +600,17 @@ function isDryRunApplication(application) {
     return values.includes('codex-dryrun') || values.includes('codex dryrun') || values.includes('ucodexdryrun');
 }
 function workflowApprovalBlocks(job, application, template, text) {
-    const scheduled = formatWorkflowSchedule(application);
     const customer = applicationCustomerDetails(application);
     const lineSummary = [
         `*表示名:* ${customer.lineDisplayName ?? '未取得'}`,
         `*LINE ID:* ${customer.lineId ?? '未取得'}`,
         `*学生名:* ${customer.studentName ?? '未設定'}`,
     ].join('\n');
-    const applicationSummary = [
-        `*申込ID:* ${application.application_id}`,
-        `*案件:* ${application.agent_name ?? '案件未設定'}`,
-        `*参加予定:* ${scheduled}`,
-    ].join('\n');
     return [
         { type: 'header', text: { type: 'plain_text', text: 'LINE送信前の確認', emoji: true } },
-        { type: 'section', text: { type: 'mrkdwn', text: `*${workflowJobTypeLabel(job.job_type)}の承認待ちです*\n承認すると、下の文面をこのLINEユーザーへ送信します。` } },
-        { type: 'section', fields: [
-                { type: 'mrkdwn', text: `*送信先（LINE）*\n${lineSummary}` },
-                { type: 'mrkdwn', text: `*対象申込*\n${applicationSummary}` },
-            ] },
-        { type: 'section', fields: [
-                { type: 'mrkdwn', text: `*テンプレート*\n${template.key} v${template.version}` },
-                { type: 'mrkdwn', text: `*送信方式*\n${template.sendMode === 'approval_required' ? 'Slack承認後に送信' : template.sendMode}` },
-            ] },
+        { type: 'section', text: { type: 'mrkdwn', text: `*誰に送る？*\n${lineSummary}` } },
         { type: 'context', elements: [
-                { type: 'mrkdwn', text: '迷ったら「送らず人間対応」を押してください。編集したい場合は「文面を編集して送信」から直せます。' },
+                { type: 'mrkdwn', text: `${workflowJobTypeLabel(job.job_type)}は同じ学生に1回だけ送ります。承認すると、このLINEユーザーへ下の文面を送信します。` },
             ] },
         { type: 'divider' },
         { type: 'section', text: { type: 'mrkdwn', text: `*LINEに送る文面（承認後に送信）*\n${text.slice(0, 2800)}` } },
@@ -642,6 +702,10 @@ export async function approveWorkflowJob(input) {
         await rejectDryRunApplicationJob(job, application);
         throw new Error(dryRunApplicationError(application));
     }
+    if (await shouldSkipDuplicatePreCautionJob(job)) {
+        await markJob(job.id, { status: 'skipped', error_message: 'Pre-participation caution already covered for this student' });
+        throw new Error('この学生には参加前注意事項がすでに送信済み、または承認待ちです。');
+    }
     if (!application.line_user_id)
         throw new Error(`Missing LINE user id for application ${application.application_id}`);
     await markJob(job.id, {
@@ -687,6 +751,12 @@ export async function runWorkflowTick(input = {}) {
             if (!dryRun)
                 await rejectDryRunApplicationJob(job, application);
             results.push({ id: job.id, ok: true, skipped: true, dryRun, applicationId: application.application_id, jobType: job.job_type, reason: 'test/dry-run application' });
+            continue;
+        }
+        if (await shouldSkipDuplicatePreCautionJob(job)) {
+            if (!dryRun)
+                await markJob(job.id, { status: 'skipped', error_message: 'Pre-participation caution already covered for this student' });
+            results.push({ id: job.id, ok: true, skipped: true, dryRun, applicationId: application.application_id, jobType: job.job_type, reason: 'pre-caution already covered for student' });
             continue;
         }
         const values = { ...templateValues(application), ...(job.metadata ?? {}) };
