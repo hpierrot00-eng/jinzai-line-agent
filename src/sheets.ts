@@ -185,6 +185,33 @@ function parseDateTime(raw: string | null) {
   return date.toISOString();
 }
 
+function formResponseSyncStartIso(startDate?: string | null) {
+  const raw = String(startDate ?? config.FORM_RESPONSE_SYNC_START_DATE ?? '').trim();
+  if (!raw) return null;
+  const value = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(raw) ? `${raw} 00:00` : raw;
+  const parsed = parseDateTime(value);
+  if (!parsed) throw new Error(`Invalid FORM_RESPONSE_SYNC_START_DATE: ${raw}`);
+  return parsed;
+}
+
+function shouldIncludeFormResponse(timestamp: string | null, startIso: string | null) {
+  if (!startIso) return true;
+  const responseIso = parseDateTime(timestamp);
+  if (!responseIso) return true;
+  return Date.parse(responseIso) >= Date.parse(startIso);
+}
+
+function filterResponsesBySyncStart<T extends { timestamp: string | null }>(responses: T[], startDate?: string | null) {
+  const syncStartAt = formResponseSyncStartIso(startDate);
+  if (!syncStartAt) return { responses, syncStartAt: null, skippedBeforeStart: 0 };
+  const filtered = responses.filter((response) => shouldIncludeFormResponse(response.timestamp, syncStartAt));
+  return { responses: filtered, syncStartAt, skippedBeforeStart: responses.length - filtered.length };
+}
+
+export function formResponsePassesStartDateForSmoke(timestamp: string | null, startDate?: string) {
+  return shouldIncludeFormResponse(timestamp, formResponseSyncStartIso(startDate));
+}
+
 function zonedDateTimeToUtcIso(input: { year: number; month: number; day: number; hour: number; minute: number; timeZone: string }) {
   const utcGuess = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0);
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -1074,11 +1101,13 @@ async function markBankAccountAnswered(student: any, response: ReturnType<typeof
   return { ok: true, dryRun: false, studentId: student.id, answeredAt, applicationIds };
 }
 
-export async function syncPostParticipationFormResponses(input: { rows?: SheetRow[]; dryRun?: boolean } = {}) {
+export async function syncPostParticipationFormResponses(input: { rows?: SheetRow[]; dryRun?: boolean; startDate?: string } = {}) {
   const source = responseSheetSource('postParticipation');
   if (!source && !input.rows) return { ok: true, status: 'disabled' as const, results: [] };
   const rows = input.rows ?? await readSheetRows(source!);
-  const responses = rows.map((row) => normalizePostParticipationResponse(row));
+  const allResponses = rows.map((row) => normalizePostParticipationResponse(row));
+  const filtered = filterResponsesBySyncStart(allResponses, input.startDate);
+  const responses = filtered.responses;
   const applications = await applicationPoolForFormMatching();
   const results = [];
   for (const response of responses) {
@@ -1090,14 +1119,16 @@ export async function syncPostParticipationFormResponses(input: { rows?: SheetRo
       results.push({ ok: false, status: match.status, response, matchRule: match.rule, candidates: match.candidates });
     }
   }
-  return { ok: true, dryRun: Boolean(input.dryRun), type: 'post_participation', results };
+  return { ok: true, dryRun: Boolean(input.dryRun), type: 'post_participation', syncStartAt: filtered.syncStartAt, skippedBeforeStart: filtered.skippedBeforeStart, results };
 }
 
-export async function syncBankAccountFormResponses(input: { rows?: SheetRow[]; dryRun?: boolean } = {}) {
+export async function syncBankAccountFormResponses(input: { rows?: SheetRow[]; dryRun?: boolean; startDate?: string } = {}) {
   const source = responseSheetSource('bankAccount');
   if (!source && !input.rows) return { ok: true, status: 'disabled' as const, results: [] };
   const rows = input.rows ?? await readSheetRows(source!);
-  const responses = rows.map((row) => normalizeBankAccountResponse(row));
+  const allResponses = rows.map((row) => normalizeBankAccountResponse(row));
+  const filtered = filterResponsesBySyncStart(allResponses, input.startDate);
+  const responses = filtered.responses;
   const students = await studentPoolForFormMatching();
   const results = [];
   for (const response of responses) {
@@ -1109,13 +1140,13 @@ export async function syncBankAccountFormResponses(input: { rows?: SheetRow[]; d
       results.push({ ok: false, status: match.status, response, matchRule: match.rule, candidates: match.candidates });
     }
   }
-  return { ok: true, dryRun: Boolean(input.dryRun), type: 'bank_account', results };
+  return { ok: true, dryRun: Boolean(input.dryRun), type: 'bank_account', syncStartAt: filtered.syncStartAt, skippedBeforeStart: filtered.skippedBeforeStart, results };
 }
 
-export async function syncFormResponseSheets(input: { postRows?: SheetRow[]; bankRows?: SheetRow[]; dryRun?: boolean } = {}) {
+export async function syncFormResponseSheets(input: { postRows?: SheetRow[]; bankRows?: SheetRow[]; dryRun?: boolean; startDate?: string } = {}) {
   const [postParticipationResult, bankAccountResult] = await Promise.allSettled([
-    syncPostParticipationFormResponses({ rows: input.postRows, dryRun: input.dryRun }),
-    syncBankAccountFormResponses({ rows: input.bankRows, dryRun: input.dryRun }),
+    syncPostParticipationFormResponses({ rows: input.postRows, dryRun: input.dryRun, startDate: input.startDate }),
+    syncBankAccountFormResponses({ rows: input.bankRows, dryRun: input.dryRun, startDate: input.startDate }),
   ]);
 
   const postParticipation = postParticipationResult.status === 'fulfilled'
