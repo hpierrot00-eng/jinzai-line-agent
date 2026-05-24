@@ -17,6 +17,8 @@ process.env.POST_FORM_DELAY_HOURS ||= '2';
 const sheets = await import('../dist/sheets.js');
 const workflow = await import('../dist/workflow.js');
 const line = await import('../dist/line.js');
+const ai = await import('../dist/ai.js');
+const db = await import('../dist/db.js');
 
 const row = sheets.normalizeSheetRowForSmoke({
   顧客ID: 'app-001',
@@ -140,5 +142,17 @@ if (sheets.formResponsePassesStartDateForSmoke('2026/05/23 23:59:59', '2026-05-2
 if (!sheets.formResponsePassesStartDateForSmoke('2026/05/24 00:00:00', '2026-05-24')) {
   throw new Error('form response start date should include rows on the start date');
 }
+
+const knowledgeTerms = ai.knowledgeSearchTerms('支払いはいつですか？2回目参加は必要ですか？');
+if (!knowledgeTerms.includes('支払い') || !knowledgeTerms.includes('2回目')) throw new Error('knowledge search term extraction failed');
+
+const knowledgeBody = db.buildKnowledgeBody({
+  incomingText: 'U123456789012345678901234567890 090-1234-5678 支払いはいつですか？',
+  replyText: '入金予定を確認します。',
+});
+if (knowledgeBody.includes('090-1234-5678') || knowledgeBody.includes('U123456789012345678901234567890')) {
+  throw new Error('knowledge body should mask sensitive identifiers');
+}
+if (!knowledgeBody.includes('問い合わせ:') || !knowledgeBody.includes('返信例:')) throw new Error('knowledge body format failed');
 
 console.log('Workflow smoke passed');
