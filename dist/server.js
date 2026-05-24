@@ -1,7 +1,7 @@
 import express from 'express';
 import { config } from './config.js';
 import { generateDraft } from './ai.js';
-import { approveMessageTemplate, createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, listKnowledgeCandidates, listMessageTemplates, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
+import { approveMessageTemplate, createAppointmentIfExtracted, createKnowledgeItem, findMessageTemplates, findRelevantKnowledge, getMonthlyRulesForReply, getOrCreateConversation, getRecentMessages, importPastTalkExamples, listKnowledgeCandidates, listMessageTemplates, promoteApprovedRepliesToKnowledge, saveDraft, saveIncomingMessage, upsertMessageTemplate, upsertMonthlyRule, upsertStudent } from './db.js';
 import { extractLineEvents, findLineDisplayName, verifyLineSignature } from './line.js';
 import { handleSlackInteraction, postApprovalMessage, postFormResponseMatchNotification, postLineIdentityNotification, postWorkflowNotification, verifySlackSignature } from './slack.js';
 import { rebuildWorkflowJobs, runWorkflowTick, processWorkflowReply, WORKFLOW_STATUSES } from './workflow.js';
@@ -135,6 +135,32 @@ app.post('/knowledge-items', async (req, res, next) => {
             return;
         const item = await createKnowledgeItem(req.body);
         res.status(201).json({ ok: true, item });
+    }
+    catch (err) {
+        next(err);
+    }
+});
+app.post('/knowledge/import-approved-replies', async (req, res, next) => {
+    try {
+        if (!requireAdmin(req, res))
+            return;
+        res.json(await promoteApprovedRepliesToKnowledge({
+            limit: req.body?.limit ? Number(req.body.limit) : 50,
+            dryRun: Boolean(req.body?.dryRun),
+        }));
+    }
+    catch (err) {
+        next(err);
+    }
+});
+app.post('/knowledge/import-examples', async (req, res, next) => {
+    try {
+        if (!requireAdmin(req, res))
+            return;
+        res.json(await importPastTalkExamples({
+            examples: Array.isArray(req.body?.examples) ? req.body.examples : [],
+            dryRun: Boolean(req.body?.dryRun),
+        }));
     }
     catch (err) {
         next(err);
