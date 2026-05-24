@@ -4,6 +4,9 @@ const dryRun = ['1', 'true', 'yes', 'on'].includes(String(process.env.CRON_DRY_R
 const task = process.argv[2] || process.env.CRON_TASK || 'ops';
 const limit = Number(process.env.WORKFLOW_TICK_LIMIT || '20');
 const sheetsBatchSize = Number(process.env.SHEETS_SYNC_BATCH_SIZE || '50');
+const sheetsMinOffset = Math.max(0, Number(process.env.SHEETS_SYNC_MIN_OFFSET || '0'));
+const sheetsStartOffset = Math.max(sheetsMinOffset, Number(process.env.SHEETS_SYNC_START_OFFSET || String(sheetsMinOffset)));
+const sheetsMaxBatches = Math.max(1, Number(process.env.SHEETS_SYNC_MAX_BATCHES || String(Number.MAX_SAFE_INTEGER)));
 
 if (!adminKey) {
   console.error('ADMIN_API_KEY is required for Render cron jobs.');
@@ -37,13 +40,31 @@ async function adminRequest(path, body) {
 function compact(result) {
   const data = result.data ?? {};
   if (result.path === '/sheets/sync') {
-    return { path: result.path, ms: result.ms, dryRun: data.dryRun, rows: data.rows, totalRows: data.totalRows, offset: data.offset, jobsCreated: data.jobs?.jobs?.length ?? 0 };
+    return {
+      path: result.path,
+      ms: result.ms,
+      dryRun: data.dryRun,
+      rows: data.rows,
+      totalRows: data.totalRows,
+      offset: data.offset,
+      nextOffset: data.nextOffset,
+      minOffset: data.minOffset,
+      limit: data.limit,
+      batches: data.batches,
+      done: data.done,
+      jobsCreated: data.jobs?.jobs?.length ?? 0,
+    };
   }
   if (result.path === '/sheets/sync-form-responses') {
     return {
       path: result.path,
       ms: result.ms,
       dryRun: data.dryRun,
+      partialFailure: Boolean(data.partialFailure),
+      postOk: data.postParticipation?.ok !== false,
+      bankOk: data.bankAccount?.ok !== false,
+      postError: data.postParticipation?.error,
+      bankError: data.bankAccount?.error,
       postResults: data.postParticipation?.results?.length ?? 0,
       bankResults: data.bankAccount?.results?.length ?? 0,
     };
@@ -60,14 +81,16 @@ function compact(result) {
 async function syncSheetsInBatches() {
   const startedAt = Date.now();
   const results = [];
-  let offset = 0;
+  let offset = sheetsStartOffset;
   let totalRows = null;
   let rows = 0;
   let jobsCreated = 0;
+  let batches = 0;
 
-  while (totalRows === null || offset < totalRows) {
+  while ((totalRows === null || offset < totalRows) && batches < sheetsMaxBatches) {
     const result = await adminRequest('/sheets/sync', { dryRun, offset, limit: sheetsBatchSize });
     results.push(result);
+    batches += 1;
     const data = result.data ?? {};
     const batchRows = Number(data.rows ?? 0);
     totalRows = Number(data.totalRows ?? offset + batchRows);
@@ -80,7 +103,19 @@ async function syncSheetsInBatches() {
   return {
     path: '/sheets/sync',
     ms: Date.now() - startedAt,
-    data: { ok: true, dryRun, rows, totalRows, offset: 0, batches: results.length, jobs: { jobs: Array.from({ length: jobsCreated }) } },
+    data: {
+      ok: true,
+      dryRun,
+      rows,
+      totalRows,
+      offset: sheetsStartOffset,
+      minOffset: sheetsMinOffset,
+      nextOffset: totalRows !== null && offset >= totalRows ? sheetsMinOffset : offset,
+      limit: sheetsBatchSize,
+      batches: results.length,
+      done: totalRows !== null && offset >= totalRows,
+      jobs: { jobs: Array.from({ length: jobsCreated }) },
+    },
   };
 }
 
