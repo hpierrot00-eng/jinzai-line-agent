@@ -257,6 +257,8 @@ TS/銀行口座フォーム回答は学生単位で照合します。優先順�
 
 一意に決まる場合だけ自動更新します。複数候補または一致なしの場合はSlackへ確認通知を送ります。回答シート列名が違う場合は、各 `*_COLUMN_MAP_JSON` で差し替えできます。
 
+過去回答の大量な未照合通知を避けたい場合は `FORM_RESPONSE_SYNC_START_DATE` を設定します。例: `FORM_RESPONSE_SYNC_START_DATE=2026-05-24` にすると、回答シートのタイムスタンプが 2026-05-24 00:00 以降の行だけを照合・Slack通知します。日付のみの値は `WORKFLOW_TIMEZONE` で解釈します。
+
 Rebuild scheduled jobs from current applications:
 
 ```text
@@ -293,6 +295,7 @@ CRON_BASE_URL=https://jinzai-line-agent.onrender.com
 CRON_DRY_RUN=false
 WORKFLOW_TICK_LIMIT=20
 SHEETS_SYNC_BATCH_SIZE=50
+FORM_RESPONSE_SYNC_START_DATE=2026-05-24
 ```
 
 `cron:ops` runs Sheets sync, form-response sync, job rebuild, and workflow tick in that order. The Sheets sync is batched with `SHEETS_SYNC_BATCH_SIZE` to avoid long request timeouts on large operator ledgers. For split schedules, use `cron:sheets-sync`, `cron:sync-form-responses`, `cron:rebuild-jobs`, and `cron:workflow-tick`.
