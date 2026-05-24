@@ -322,10 +322,14 @@ export async function postFormResponseMatchNotification(syncResult: any) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*同期エラー:*\n${failures.map((item) => `• ${item}`).join('\n')}` } });
   }
   if (postIssues.length > 0) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*参加確認フォーム:*\n${postIssues.slice(0, 8).map((result: any) => formResponseLine(result, 'post')).join('\n\n')}` } });
+    const skipped = Number(syncResult.postParticipation?.skippedBeforeStart ?? 0);
+    const rangeText = syncResult.postParticipation?.syncStartAt ? `\n_対象: ${syncResult.postParticipation.syncStartAt} 以降 / 過去スキップ ${skipped}件_` : '';
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*参加確認フォーム:*${rangeText}\n${postIssues.slice(0, 8).map((result: any) => formResponseLine(result, 'post')).join('\n\n')}` } });
   }
   if (bankIssues.length > 0) {
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*TS/銀行口座フォーム:*\n${bankIssues.slice(0, 8).map((result: any) => formResponseLine(result, 'bank')).join('\n\n')}` } });
+    const skipped = Number(syncResult.bankAccount?.skippedBeforeStart ?? 0);
+    const rangeText = syncResult.bankAccount?.syncStartAt ? `\n_対象: ${syncResult.bankAccount.syncStartAt} 以降 / 過去スキップ ${skipped}件_` : '';
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*TS/銀行口座フォーム:*${rangeText}\n${bankIssues.slice(0, 8).map((result: any) => formResponseLine(result, 'bank')).join('\n\n')}` } });
   }
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: failures.length > 0 ? '同期エラーはcronを落とさず通知しています。一意に決まらなかった回答は管理シートまたは回答内容を確認してください。' : '一意に決まらなかった回答だけ表示しています。管理シートまたは回答内容を確認してください。' }] });
 
