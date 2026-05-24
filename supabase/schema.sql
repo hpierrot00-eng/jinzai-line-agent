@@ -290,6 +290,7 @@ create index if not exists idx_reply_drafts_status on reply_drafts(status);
 create index if not exists idx_delivery_attempts_draft_created on delivery_attempts(reply_draft_id, created_at desc);
 create index if not exists idx_delivery_attempts_application_created on delivery_attempts(application_id, created_at desc);
 create index if not exists idx_knowledge_items_lookup on knowledge_items(client_id, status, category, priority desc);
+create index if not exists idx_knowledge_items_source on knowledge_items(client_id, source);
 create index if not exists idx_monthly_rules_lookup on monthly_rules(client_id, status, rule_month, category);
 create index if not exists idx_message_templates_lookup on message_templates(client_id, status, category, priority desc);
 create index if not exists idx_referral_applications_student on referral_applications(student_id, updated_at desc);
