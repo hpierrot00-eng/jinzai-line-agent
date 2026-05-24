@@ -1,4 +1,29 @@
 import { config } from './config.js';
+export const KNOWLEDGE_SEARCH_KEYWORDS = [
+    '支払い',
+    '入金',
+    '報酬',
+    '就活支援金',
+    'キャンセル',
+    '日程変更',
+    'リスケ',
+    '面談',
+    '2回目',
+    '二回目',
+    '確認できました',
+    '確認しました',
+    '回答しました',
+    '参加確認',
+    'フォーム',
+    '銀行',
+    '口座',
+    '注意事項',
+    'エージェント',
+    '紹介',
+    'いつ',
+    'URL',
+    'リンク',
+];
 const PAYMENT_RE = /支払|支払い|入金|報酬|料金|返金|給与|給料|時給|月給|日給|単価|交通費|契約|条件|待遇|福利厚生|勤務時間|残業|雇用|内定|オファー|採用可否|合否/;
 const LEGAL_RE = /法律|違法|労基|労働基準|労災|税金|保険|社会保険|ビザ|visa|在留|永住|就労資格|契約書|個人情報|削除|消去|開示|訂正|同意撤回|退会/iu;
 const COMPLAINT_RE = /クレーム|苦情|ハラスメント|パワハラ|セクハラ|詐欺|炎上|訴え|訴訟|トラブル|揉め|晒す|脅|暴力|自殺|死にたい/;
@@ -66,6 +91,28 @@ function fallbackDraft(input) {
         suggested_next_action: base.risk_level === 'blocked' || base.risk_level === 'high' ? 'escalate' : 'approve_send',
     };
 }
+export function knowledgeSearchTerms(text) {
+    const normalized = String(text ?? '').normalize('NFKC');
+    const terms = new Set();
+    for (const term of normalized.split(/[\s、。！？!?,.，．\n\r]+/)) {
+        const value = term.trim();
+        if (value.length >= 2 && value.length <= 40)
+            terms.add(value);
+    }
+    for (const keyword of KNOWLEDGE_SEARCH_KEYWORDS) {
+        if (normalized.includes(keyword))
+            terms.add(keyword);
+    }
+    return [...terms].slice(0, 12);
+}
+export function formatKnowledgeForPrompt(items = []) {
+    return items.slice(0, 6).map((item) => ({
+        title: item.title,
+        category: item.category,
+        body: item.body,
+        priority: item.priority,
+    }));
+}
 function selectTemplate(templates = [], category) {
     const exact = templates.find((template) => template.category === category);
     const general = templates.find((template) => template.category === 'general');
@@ -124,6 +171,7 @@ export async function generateDraft(input) {
             output_schema: 'category,risk_level,confidence,needs_human_review,reply_text,reason,extracted_data,suggested_next_action',
             input,
             template_hints: input.templates?.map((template) => ({ key: template.key, category: template.category, body: template.body })),
+            knowledge_hints: formatKnowledgeForPrompt(input.knowledge),
         }),
     });
     if (!res.ok)
