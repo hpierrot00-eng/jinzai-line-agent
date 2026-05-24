@@ -1,5 +1,7 @@
+import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
+import { knowledgeSearchTerms } from './ai.js';
 import { extractMarkAsReadToken } from './line.js';
 import type { DraftResult, InboundLineMessage, KnowledgeItem, MessageTemplate, MonthlyRule } from './types.js';
 
@@ -10,6 +12,46 @@ export const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVIC
 function single<T>(data: T | T[] | null): T {
   if (!data) throw new Error('Supabase returned no row');
   return Array.isArray(data) ? data[0] : data;
+}
+
+function errorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+export function sanitizeKnowledgeText(text: unknown) {
+  return String(text ?? '')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
+    .replace(/\bU[a-f0-9]{20,}\b/gi, '[line_user_id]')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[uuid]')
+    .replace(/\b0\d{1,4}[-\s]?\d{1,4}[-\s]?\d{3,4}\b/g, '[phone]')
+    .replace(/\b\d{6,8}\b/g, '[number]')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
+
+function knowledgeHash(input: string) {
+  return crypto.createHash('sha1').update(input).digest('hex').slice(0, 16);
+}
+
+function approvedKnowledgeSource(approvalId: string) {
+  return `approved_reply:${approvalId}`;
+}
+
+export function buildKnowledgeBody(input: { incomingText?: string | null; replyText: string; note?: string | null }) {
+  const incoming = sanitizeKnowledgeText(input.incomingText);
+  const reply = sanitizeKnowledgeText(input.replyText);
+  const note = sanitizeKnowledgeText(input.note);
+  return [
+    incoming ? `問い合わせ:\n${incoming}` : null,
+    `返信例:\n${reply}`,
+    note ? `運用メモ:\n${note}` : null,
+  ].filter(Boolean).join('\n\n');
 }
 
 export async function upsertStudent(input: InboundLineMessage) {
@@ -182,6 +224,14 @@ export async function recordOutgoingAndApproval(replyDraftId: string, action: st
 
   await supabase.from('reply_drafts').update({ status: 'sent', updated_at: new Date().toISOString() }).eq('id', replyDraftId);
   await supabase.from('conversations').update({ status: 'waiting_customer', last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', conversation.id);
+  await createKnowledgeFromApprovedReply({
+    approvalId: approval.data.id,
+    replyDraft: draft,
+    finalText,
+    action,
+  }).catch((err) => {
+    console.warn('approved reply knowledge capture skipped:', errorMessage(err));
+  });
 
   return { draft, conversation, student, approval: approval.data, message: message.data };
 }
@@ -263,11 +313,7 @@ export async function createAppointmentIfExtracted(studentId: string, conversati
 }
 
 export async function findRelevantKnowledge(text: string, category?: string, limit = 6): Promise<KnowledgeItem[]> {
-  const terms = text
-    .split(/[\s、。！？!?,.]+/)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 2)
-    .slice(0, 8);
+  const terms = knowledgeSearchTerms(text);
 
   let query = supabase
     .from('knowledge_items')
@@ -459,6 +505,114 @@ export async function createKnowledgeItem(input: { title: string; category?: str
   }).select('*').single();
   if (error) throw error;
   return data;
+}
+
+async function getIncomingTextForDraft(replyDraft: any) {
+  const messageId = replyDraft?.trigger_message_id;
+  if (!messageId) return null;
+  const { data, error } = await supabase
+    .from('messages')
+    .select('content')
+    .eq('id', messageId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.content ?? null;
+}
+
+export async function createKnowledgeFromApprovedReply(input: { approvalId: string; replyDraft: any; finalText: string; action?: string; dryRun?: boolean }) {
+  if (!input.finalText?.trim()) return { ok: false, status: 'empty_reply' as const };
+  const source = approvedKnowledgeSource(input.approvalId);
+  const existing = await supabase
+    .from('knowledge_items')
+    .select('id')
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .eq('source', source)
+    .maybeSingle();
+  if (existing.error) throw existing.error;
+  if (existing.data) return { ok: true, status: 'exists' as const, source, itemId: existing.data.id };
+
+  const incomingText = await getIncomingTextForDraft(input.replyDraft);
+  const category = input.replyDraft?.category ?? 'general';
+  const risk = input.replyDraft?.risk_level ?? 'unknown';
+  const body = buildKnowledgeBody({
+    incomingText,
+    replyText: input.finalText,
+    note: `Slack承認済み返信。action=${input.action ?? 'approve'} / risk=${risk}`,
+  });
+  const title = `承認済み返信例: ${category}`;
+  if (input.dryRun) return { ok: true, dryRun: true, status: 'would_create' as const, source, title, category, body };
+  const item = await createKnowledgeItem({
+    title,
+    category,
+    body,
+    source,
+    priority: input.action === 'edit_and_approve' ? 85 : 75,
+  });
+  return { ok: true, status: 'created' as const, source, item };
+}
+
+export async function promoteApprovedRepliesToKnowledge(input: { limit?: number; dryRun?: boolean } = {}) {
+  const limit = Math.min(Math.max(Number(input.limit ?? 50), 1), 200);
+  const { data, error } = await supabase
+    .from('approvals')
+    .select('id,action,after_text,created_at,reply_draft_id,reply_drafts(id,trigger_message_id,category,risk_level,reason)')
+    .eq('client_id', config.DEFAULT_CLIENT_ID)
+    .in('action', ['approve', 'edit_and_approve'])
+    .not('after_text', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  const results = [];
+  for (const approval of data ?? []) {
+    results.push(await createKnowledgeFromApprovedReply({
+      approvalId: approval.id,
+      replyDraft: (approval as any).reply_drafts,
+      finalText: approval.after_text,
+      action: approval.action,
+      dryRun: input.dryRun,
+    }));
+  }
+  return { ok: true, dryRun: Boolean(input.dryRun), scanned: data?.length ?? 0, created: results.filter((item: any) => item.status === 'created' || item.status === 'would_create').length, results };
+}
+
+export async function importPastTalkExamples(input: { examples: Array<{ incomingText?: string; question?: string; replyText?: string; reply?: string; category?: string; title?: string; source?: string; priority?: number; note?: string }>; dryRun?: boolean }) {
+  const examples = Array.isArray(input.examples) ? input.examples.slice(0, 200) : [];
+  const results = [];
+  for (const example of examples) {
+    const incomingText = example.incomingText ?? example.question ?? '';
+    const replyText = example.replyText ?? example.reply ?? '';
+    if (!replyText.trim()) {
+      results.push({ ok: false, status: 'empty_reply' as const });
+      continue;
+    }
+    const body = buildKnowledgeBody({ incomingText, replyText, note: example.note ?? '過去トーク取り込み' });
+    const source = example.source ?? `past_talk_import:${knowledgeHash(`${incomingText}\n${replyText}`)}`;
+    const existing = await supabase
+      .from('knowledge_items')
+      .select('id')
+      .eq('client_id', config.DEFAULT_CLIENT_ID)
+      .eq('source', source)
+      .maybeSingle();
+    if (existing.error) throw existing.error;
+    if (existing.data) {
+      results.push({ ok: true, status: 'exists' as const, source, itemId: existing.data.id });
+      continue;
+    }
+    const payload = {
+      title: example.title ?? `過去対応例: ${example.category ?? 'general'}`,
+      category: example.category ?? 'general',
+      body,
+      source,
+      priority: example.priority ?? 60,
+    };
+    if (input.dryRun) {
+      results.push({ ok: true, dryRun: true, status: 'would_create' as const, ...payload });
+      continue;
+    }
+    const item = await createKnowledgeItem(payload);
+    results.push({ ok: true, status: 'created' as const, source, item });
+  }
+  return { ok: true, dryRun: Boolean(input.dryRun), received: examples.length, created: results.filter((item: any) => item.status === 'created' || item.status === 'would_create').length, results };
 }
 
 export async function upsertMonthlyRule(input: { ruleMonth: string; category: string; label: string; value: string; notes?: string; status?: string }) {
