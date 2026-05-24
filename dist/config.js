@@ -53,6 +53,7 @@ const envSchema = z.object({
     BANK_ACCOUNT_RESPONSES_TAB_NAME: z.string().optional().default(''),
     BANK_ACCOUNT_RESPONSES_HEADER_ROW: z.coerce.number().int().positive().default(1),
     BANK_ACCOUNT_RESPONSE_COLUMN_MAP_JSON: z.string().optional().default(''),
+    FORM_RESPONSE_SYNC_START_DATE: z.string().optional().default(''),
     POST_PARTICIPATION_FORM_URL: z.string().optional().default(''),
     BANK_ACCOUNT_FORM_URL: z.string().optional().default(''),
     WORKFLOW_TIMEZONE: z.string().default('Asia/Tokyo'),
