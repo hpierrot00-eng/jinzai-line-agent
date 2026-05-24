@@ -72,6 +72,17 @@ const rendered = workflow.renderWorkflowTemplate(workflow.WORKFLOW_TEMPLATE_BODI
 });
 if (!rendered.includes('参加当日')) throw new Error('template rendering failed');
 
+const approvalBlocks = workflow.workflowApprovalBlocksForSmoke({
+  lineDisplayName: 'LINE山田',
+  lineUserId: 'Usmoke001',
+  studentName: '山田太郎',
+  text: '参加前注意事項本文',
+});
+const approvalBlockText = JSON.stringify(approvalBlocks);
+if (!approvalBlockText.includes('誰に送る？')) throw new Error('approval card should lead with recipient');
+if (!approvalBlockText.includes('LINE山田') || !approvalBlockText.includes('Usmoke001') || !approvalBlockText.includes('山田太郎')) throw new Error('approval card should show LINE recipient details');
+if (approvalBlockText.includes('対象申込') || approvalBlockText.includes('申込ID') || approvalBlockText.includes('案件:')) throw new Error('approval card should not lead with application details');
+
 const nameCandidates = sheets.extractStudentNameCandidates('山田太郎です。確認しました', '山田太郎');
 if (!nameCandidates.includes('山田太郎')) throw new Error('student name extraction failed');
 
@@ -122,5 +133,12 @@ const bankResponseMatch = sheets.matchBankAccountResponseForSmoke(
   ],
 );
 if (bankResponseMatch.status !== 'matched' || bankResponseMatch.match.id !== 'student-a') throw new Error('bank-account response matching failed');
+
+if (sheets.formResponsePassesStartDateForSmoke('2026/05/23 23:59:59', '2026-05-24')) {
+  throw new Error('form response start date should skip older rows');
+}
+if (!sheets.formResponsePassesStartDateForSmoke('2026/05/24 00:00:00', '2026-05-24')) {
+  throw new Error('form response start date should include rows on the start date');
+}
 
 console.log('Workflow smoke passed');
