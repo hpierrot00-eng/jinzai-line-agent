@@ -7,6 +7,7 @@ const sheetsBatchSize = Number(process.env.SHEETS_SYNC_BATCH_SIZE || '50');
 const sheetsMinOffset = Math.max(0, Number(process.env.SHEETS_SYNC_MIN_OFFSET || '0'));
 const sheetsStartOffset = Math.max(sheetsMinOffset, Number(process.env.SHEETS_SYNC_START_OFFSET || String(sheetsMinOffset)));
 const sheetsMaxBatches = Math.max(1, Number(process.env.SHEETS_SYNC_MAX_BATCHES || String(Number.MAX_SAFE_INTEGER)));
+const formResponseSyncStartDate = process.env.FORM_RESPONSE_SYNC_START_DATE || '';
 
 if (!adminKey) {
   console.error('ADMIN_API_KEY is required for Render cron jobs.');
@@ -65,6 +66,10 @@ function compact(result) {
       bankOk: data.bankAccount?.ok !== false,
       postError: data.postParticipation?.error,
       bankError: data.bankAccount?.error,
+      postSyncStartAt: data.postParticipation?.syncStartAt,
+      bankSyncStartAt: data.bankAccount?.syncStartAt,
+      postSkippedBeforeStart: data.postParticipation?.skippedBeforeStart ?? 0,
+      bankSkippedBeforeStart: data.bankAccount?.skippedBeforeStart ?? 0,
       postResults: data.postParticipation?.results?.length ?? 0,
       bankResults: data.bankAccount?.results?.length ?? 0,
     };
@@ -121,7 +126,7 @@ async function syncSheetsInBatches() {
 
 const tasks = {
   'sheets-sync': () => syncSheetsInBatches(),
-  'sync-form-responses': () => adminRequest('/sheets/sync-form-responses', { dryRun, notifySlack: true }),
+  'sync-form-responses': () => adminRequest('/sheets/sync-form-responses', { dryRun, notifySlack: true, startDate: formResponseSyncStartDate || undefined }),
   'rebuild-jobs': () => adminRequest('/workflow/rebuild-jobs', { dryRun }),
   'workflow-tick': () => adminRequest('/workflow/tick', { dryRun, limit }),
   async ops() {
