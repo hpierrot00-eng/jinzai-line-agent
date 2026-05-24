@@ -51,6 +51,18 @@ const SHEETS_HEADER_ALIASES = {
 function nowIso() {
     return new Date().toISOString();
 }
+function errorMessage(err) {
+    if (err instanceof Error)
+        return err.message;
+    if (typeof err === 'string')
+        return err;
+    try {
+        return JSON.stringify(err);
+    }
+    catch {
+        return String(err);
+    }
+}
 export function sheetsColumnMap() {
     if (!config.SHEETS_COLUMN_MAP_JSON)
         return { ...DEFAULT_SHEETS_COLUMN_MAP };
@@ -140,6 +152,34 @@ function parseDateTime(raw) {
     if (Number.isNaN(date.getTime()))
         return null;
     return date.toISOString();
+}
+function formResponseSyncStartIso(startDate) {
+    const raw = String(startDate ?? config.FORM_RESPONSE_SYNC_START_DATE ?? '').trim();
+    if (!raw)
+        return null;
+    const value = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(raw) ? `${raw} 00:00` : raw;
+    const parsed = parseDateTime(value);
+    if (!parsed)
+        throw new Error(`Invalid FORM_RESPONSE_SYNC_START_DATE: ${raw}`);
+    return parsed;
+}
+function shouldIncludeFormResponse(timestamp, startIso) {
+    if (!startIso)
+        return true;
+    const responseIso = parseDateTime(timestamp);
+    if (!responseIso)
+        return true;
+    return Date.parse(responseIso) >= Date.parse(startIso);
+}
+function filterResponsesBySyncStart(responses, startDate) {
+    const syncStartAt = formResponseSyncStartIso(startDate);
+    if (!syncStartAt)
+        return { responses, syncStartAt: null, skippedBeforeStart: 0 };
+    const filtered = responses.filter((response) => shouldIncludeFormResponse(response.timestamp, syncStartAt));
+    return { responses: filtered, syncStartAt, skippedBeforeStart: responses.length - filtered.length };
+}
+export function formResponsePassesStartDateForSmoke(timestamp, startDate) {
+    return shouldIncludeFormResponse(timestamp, formResponseSyncStartIso(startDate));
 }
 function zonedDateTimeToUtcIso(input) {
     const utcGuess = Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute, 0);
@@ -1019,7 +1059,9 @@ export async function syncPostParticipationFormResponses(input = {}) {
     if (!source && !input.rows)
         return { ok: true, status: 'disabled', results: [] };
     const rows = input.rows ?? await readSheetRows(source);
-    const responses = rows.map((row) => normalizePostParticipationResponse(row));
+    const allResponses = rows.map((row) => normalizePostParticipationResponse(row));
+    const filtered = filterResponsesBySyncStart(allResponses, input.startDate);
+    const responses = filtered.responses;
     const applications = await applicationPoolForFormMatching();
     const results = [];
     for (const response of responses) {
@@ -1032,14 +1074,16 @@ export async function syncPostParticipationFormResponses(input = {}) {
             results.push({ ok: false, status: match.status, response, matchRule: match.rule, candidates: match.candidates });
         }
     }
-    return { ok: true, dryRun: Boolean(input.dryRun), type: 'post_participation', results };
+    return { ok: true, dryRun: Boolean(input.dryRun), type: 'post_participation', syncStartAt: filtered.syncStartAt, skippedBeforeStart: filtered.skippedBeforeStart, results };
 }
 export async function syncBankAccountFormResponses(input = {}) {
     const source = responseSheetSource('bankAccount');
     if (!source && !input.rows)
         return { ok: true, status: 'disabled', results: [] };
     const rows = input.rows ?? await readSheetRows(source);
-    const responses = rows.map((row) => normalizeBankAccountResponse(row));
+    const allResponses = rows.map((row) => normalizeBankAccountResponse(row));
+    const filtered = filterResponsesBySyncStart(allResponses, input.startDate);
+    const responses = filtered.responses;
     const students = await studentPoolForFormMatching();
     const results = [];
     for (const response of responses) {
@@ -1052,12 +1096,24 @@ export async function syncBankAccountFormResponses(input = {}) {
             results.push({ ok: false, status: match.status, response, matchRule: match.rule, candidates: match.candidates });
         }
     }
-    return { ok: true, dryRun: Boolean(input.dryRun), type: 'bank_account', results };
+    return { ok: true, dryRun: Boolean(input.dryRun), type: 'bank_account', syncStartAt: filtered.syncStartAt, skippedBeforeStart: filtered.skippedBeforeStart, results };
 }
 export async function syncFormResponseSheets(input = {}) {
-    const [postParticipation, bankAccount] = await Promise.all([
-        syncPostParticipationFormResponses({ rows: input.postRows, dryRun: input.dryRun }),
-        syncBankAccountFormResponses({ rows: input.bankRows, dryRun: input.dryRun }),
+    const [postParticipationResult, bankAccountResult] = await Promise.allSettled([
+        syncPostParticipationFormResponses({ rows: input.postRows, dryRun: input.dryRun, startDate: input.startDate }),
+        syncBankAccountFormResponses({ rows: input.bankRows, dryRun: input.dryRun, startDate: input.startDate }),
     ]);
-    return { ok: true, dryRun: Boolean(input.dryRun), postParticipation, bankAccount };
+    const postParticipation = postParticipationResult.status === 'fulfilled'
+        ? postParticipationResult.value
+        : { ok: false, status: 'failed', type: 'post_participation', error: errorMessage(postParticipationResult.reason), results: [] };
+    const bankAccount = bankAccountResult.status === 'fulfilled'
+        ? bankAccountResult.value
+        : { ok: false, status: 'failed', type: 'bank_account', error: errorMessage(bankAccountResult.reason), results: [] };
+    return {
+        ok: true,
+        partialFailure: !postParticipation.ok || !bankAccount.ok,
+        dryRun: Boolean(input.dryRun),
+        postParticipation,
+        bankAccount,
+    };
 }
