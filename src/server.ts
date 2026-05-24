@@ -199,7 +199,13 @@ app.post('/sheets/sync-form-responses', async (req, res, next) => {
       bankRows: req.body?.bankRows,
       dryRun: Boolean(req.body?.dryRun),
     });
-    if (req.body?.notifySlack !== false) await postFormResponseMatchNotification(result);
+    if (req.body?.notifySlack !== false) {
+      try {
+        await postFormResponseMatchNotification(result);
+      } catch (err) {
+        console.warn('form response Slack notification skipped:', errorMessage(err));
+      }
+    }
     res.json(result);
   } catch (err) { next(err); }
 });
