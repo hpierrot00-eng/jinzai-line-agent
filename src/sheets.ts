@@ -82,6 +82,16 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function errorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
 export function sheetsColumnMap(): SheetsColumnMap {
   if (!config.SHEETS_COLUMN_MAP_JSON) return { ...DEFAULT_SHEETS_COLUMN_MAP };
   const parsed = JSON.parse(config.SHEETS_COLUMN_MAP_JSON) as Partial<SheetsColumnMap>;
@@ -1103,9 +1113,23 @@ export async function syncBankAccountFormResponses(input: { rows?: SheetRow[]; d
 }
 
 export async function syncFormResponseSheets(input: { postRows?: SheetRow[]; bankRows?: SheetRow[]; dryRun?: boolean } = {}) {
-  const [postParticipation, bankAccount] = await Promise.all([
+  const [postParticipationResult, bankAccountResult] = await Promise.allSettled([
     syncPostParticipationFormResponses({ rows: input.postRows, dryRun: input.dryRun }),
     syncBankAccountFormResponses({ rows: input.bankRows, dryRun: input.dryRun }),
   ]);
-  return { ok: true, dryRun: Boolean(input.dryRun), postParticipation, bankAccount };
+
+  const postParticipation = postParticipationResult.status === 'fulfilled'
+    ? postParticipationResult.value
+    : { ok: false, status: 'failed' as const, type: 'post_participation', error: errorMessage(postParticipationResult.reason), results: [] };
+  const bankAccount = bankAccountResult.status === 'fulfilled'
+    ? bankAccountResult.value
+    : { ok: false, status: 'failed' as const, type: 'bank_account', error: errorMessage(bankAccountResult.reason), results: [] };
+
+  return {
+    ok: true,
+    partialFailure: !postParticipation.ok || !bankAccount.ok,
+    dryRun: Boolean(input.dryRun),
+    postParticipation,
+    bankAccount,
+  };
 }
