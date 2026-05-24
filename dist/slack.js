@@ -307,20 +307,31 @@ function formResponseLine(result, kind) {
     return `*回答:* ${base}\n*状態:* ${result.status}${result.matchRule ? ` / ${result.matchRule}` : ''}\n*候補:*\n${candidates.length ? candidates.join('\n') : 'なし'}`;
 }
 export async function postFormResponseMatchNotification(syncResult) {
+    const failures = [
+        syncResult.postParticipation?.ok === false ? `参加確認フォーム: ${syncResult.postParticipation.error ?? 'unknown error'}` : null,
+        syncResult.bankAccount?.ok === false ? `TS/銀行口座フォーム: ${syncResult.bankAccount.error ?? 'unknown error'}` : null,
+    ].filter(Boolean);
     const postIssues = (syncResult.postParticipation?.results ?? []).filter((result) => result.status === 'multiple' || result.status === 'unmatched');
     const bankIssues = (syncResult.bankAccount?.results ?? []).filter((result) => result.status === 'multiple' || result.status === 'unmatched');
-    if (postIssues.length === 0 && bankIssues.length === 0)
+    if (failures.length === 0 && postIssues.length === 0 && bankIssues.length === 0)
         return null;
     const blocks = [
         { type: 'header', text: { type: 'plain_text', text: 'フォーム回答の照合確認', emoji: true } },
     ];
+    if (failures.length > 0) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*同期エラー:*\n${failures.map((item) => `• ${item}`).join('\n')}` } });
+    }
     if (postIssues.length > 0) {
-        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*参加確認フォーム:*\n${postIssues.slice(0, 8).map((result) => formResponseLine(result, 'post')).join('\n\n')}` } });
+        const skipped = Number(syncResult.postParticipation?.skippedBeforeStart ?? 0);
+        const rangeText = syncResult.postParticipation?.syncStartAt ? `\n_対象: ${syncResult.postParticipation.syncStartAt} 以降 / 過去スキップ ${skipped}件_` : '';
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*参加確認フォーム:*${rangeText}\n${postIssues.slice(0, 8).map((result) => formResponseLine(result, 'post')).join('\n\n')}` } });
     }
     if (bankIssues.length > 0) {
-        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*TS/銀行口座フォーム:*\n${bankIssues.slice(0, 8).map((result) => formResponseLine(result, 'bank')).join('\n\n')}` } });
+        const skipped = Number(syncResult.bankAccount?.skippedBeforeStart ?? 0);
+        const rangeText = syncResult.bankAccount?.syncStartAt ? `\n_対象: ${syncResult.bankAccount.syncStartAt} 以降 / 過去スキップ ${skipped}件_` : '';
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*TS/銀行口座フォーム:*${rangeText}\n${bankIssues.slice(0, 8).map((result) => formResponseLine(result, 'bank')).join('\n\n')}` } });
     }
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '一意に決まらなかった回答だけ表示しています。管理シートまたは回答内容を確認してください。' }] });
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: failures.length > 0 ? '同期エラーはcronを落とさず通知しています。一意に決まらなかった回答は管理シートまたは回答内容を確認してください。' : '一意に決まらなかった回答だけ表示しています。管理シートまたは回答内容を確認してください。' }] });
     const result = await slack.chat.postMessage({
         channel: config.SLACK_APPROVAL_CHANNEL_ID,
         text: 'フォーム回答の照合確認',
