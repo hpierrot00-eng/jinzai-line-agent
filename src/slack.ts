@@ -307,20 +307,27 @@ function formResponseLine(result: any, kind: 'post' | 'bank') {
 }
 
 export async function postFormResponseMatchNotification(syncResult: any) {
+  const failures = [
+    syncResult.postParticipation?.ok === false ? `参加確認フォーム: ${syncResult.postParticipation.error ?? 'unknown error'}` : null,
+    syncResult.bankAccount?.ok === false ? `TS/銀行口座フォーム: ${syncResult.bankAccount.error ?? 'unknown error'}` : null,
+  ].filter(Boolean);
   const postIssues = (syncResult.postParticipation?.results ?? []).filter((result: any) => result.status === 'multiple' || result.status === 'unmatched');
   const bankIssues = (syncResult.bankAccount?.results ?? []).filter((result: any) => result.status === 'multiple' || result.status === 'unmatched');
-  if (postIssues.length === 0 && bankIssues.length === 0) return null;
+  if (failures.length === 0 && postIssues.length === 0 && bankIssues.length === 0) return null;
 
   const blocks: any[] = [
     { type: 'header', text: { type: 'plain_text', text: 'フォーム回答の照合確認', emoji: true } },
   ];
+  if (failures.length > 0) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*同期エラー:*\n${failures.map((item) => `• ${item}`).join('\n')}` } });
+  }
   if (postIssues.length > 0) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*参加確認フォーム:*\n${postIssues.slice(0, 8).map((result: any) => formResponseLine(result, 'post')).join('\n\n')}` } });
   }
   if (bankIssues.length > 0) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*TS/銀行口座フォーム:*\n${bankIssues.slice(0, 8).map((result: any) => formResponseLine(result, 'bank')).join('\n\n')}` } });
   }
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '一意に決まらなかった回答だけ表示しています。管理シートまたは回答内容を確認してください。' }] });
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: failures.length > 0 ? '同期エラーはcronを落とさず通知しています。一意に決まらなかった回答は管理シートまたは回答内容を確認してください。' : '一意に決まらなかった回答だけ表示しています。管理シートまたは回答内容を確認してください。' }] });
 
   const result = await slack.chat.postMessage({
     channel: config.SLACK_APPROVAL_CHANNEL_ID,
