@@ -329,6 +329,30 @@ curl -X POST https://YOUR_DOMAIN/knowledge-items \
   -d '{"title":"支払い時期の基本回答","category":"payment","body":"支払い時期は案件・契約条件により異なるため、必ず確認してから案内する。","priority":10}'
 ```
 
+Import already approved Slack replies into `knowledge_items`:
+
+```bash
+curl -X POST https://YOUR_DOMAIN/knowledge/import-approved-replies \
+  -H "authorization: Bearer $ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"limit":50,"dryRun":true}'
+```
+
+Set `dryRun` to `false` after reviewing the count. New Slack approvals are also captured automatically as knowledge items after a successful LINE send. The app stores the triggering incoming text and the final approved reply, masks obvious IDs/contact values, and reuses those examples during future draft generation.
+
+Apply `supabase/knowledge-learning-2026-05-24.sql` once to add the recommended source lookup index before a large import.
+
+Import curated historical examples from CSV/exported chat tooling:
+
+```bash
+curl -X POST https://YOUR_DOMAIN/knowledge/import-examples \
+  -H "authorization: Bearer $ADMIN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"dryRun":true,"examples":[{"category":"payment","incomingText":"支払いはいつですか？","replyText":"確認して担当よりご案内します。"}]}'
+```
+
+Use this for past LINE/Slack conversations that were not already represented in `approvals`. Keep examples concise and avoid storing unnecessary personal information. Existing `source` values are de-duplicated, so the same approved reply/import hash is not inserted twice.
+
 Create or update a monthly rule:
 
 ```bash
